@@ -8,10 +8,14 @@ namespace DevSpaceManager.UI;
 internal sealed class SettingsForm : Form
 {
     private readonly AppHost _app;
+    private readonly object _requestUiGate = new();
+    private readonly Dictionary<Guid, McpRequestEntry> _pendingRequestEntries = new();
     private ComboBox _nodeVersion = null!;
     private TextBox _publicBaseUrl = null!;
     private TextBox _tunnelName = null!;
     private NumericUpDown _devSpacePort = null!;
+    private CheckBox _requestProxyEnabled = null!;
+    private NumericUpDown _requestProxyPort = null!;
     private TextBox _mcpUrl = null!;
     private TextBox _healthUrl = null!;
     private TextBox _ownerPassword = null!;
@@ -36,6 +40,12 @@ internal sealed class SettingsForm : Form
     private Button _runSpeedTestButton = null!;
     private Label _startupStatus = null!;
     private TextBox _speedTestOutput = null!;
+    private ListView _requestList = null!;
+    private TextBox _devspaceStdoutLog = null!;
+    private TextBox _devspaceStderrLog = null!;
+    private TextBox _tunnelStdoutLog = null!;
+    private TextBox _tunnelStderrLog = null!;
+    private System.Windows.Forms.Timer _requestUiTimer = null!;
     private bool _ownerPasswordVisible;
 
     public SettingsForm(AppHost app)
@@ -48,6 +58,7 @@ internal sealed class SettingsForm : Form
         Height = 760;
         MinimumSize = new Size(860, 680);
         BuildUi();
+        HookRequestMonitor();
         LoadData();
     }
 
@@ -68,6 +79,8 @@ internal sealed class SettingsForm : Form
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildCommonPage());
         tabs.TabPages.Add(BuildProjectRootsPage());
+        tabs.TabPages.Add(BuildRequestsPage());
+        tabs.TabPages.Add(BuildLogsPage());
         tabs.TabPages.Add(BuildSpeedTestPage());
         tabs.TabPages.Add(BuildStartupPage());
         tabs.TabPages.Add(BuildUpdatePage());
@@ -96,6 +109,47 @@ internal sealed class SettingsForm : Form
         root.Controls.Add(quick, 0, 3);
 
         Controls.Add(root);
+
+        _requestUiTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _requestUiTimer.Tick += (_, _) => FlushPendingRequestEntries();
+        _requestUiTimer.Start();
+    }
+
+    private TabPage BuildLogsPage()
+    {
+        var page = new TabPage("日志");
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(BuildLogViewerPage("DevSpace 输出", out _devspaceStdoutLog, AppPaths.LogDirectory, AppPaths.LogDirectory));
+        tabs.TabPages.Add(BuildLogViewerPage("DevSpace 错误", out _devspaceStderrLog, AppPaths.LogDirectory, AppPaths.LogDirectory));
+        tabs.TabPages.Add(BuildLogViewerPage("隧道输出", out _tunnelStdoutLog, AppPaths.LogDirectory, AppPaths.LogDirectory));
+        tabs.TabPages.Add(BuildLogViewerPage("隧道错误", out _tunnelStderrLog, AppPaths.LogDirectory, AppPaths.LogDirectory));
+        page.Controls.Add(tabs);
+        return page;
+    }
+
+    private TabPage BuildLogViewerPage(string title, out TextBox editor, string openPath, string refreshSourcePath)
+    {
+        var page = new TabPage(title);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, Padding = new Padding(8) };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill };
+        buttons.Controls.Add(Button("重新载入", (_, _) => LoadLogViews()));
+        buttons.Controls.Add(Button("打开日志目录", (_, _) => OpenPath(openPath)));
+        layout.Controls.Add(buttons, 0, 0);
+        editor = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Font = new Font(FontFamily.GenericMonospace, 9),
+            BackColor = SystemColors.Window
+        };
+        layout.Controls.Add(editor, 0, 1);
+        page.Controls.Add(layout);
+        return page;
     }
 
     private TabPage BuildCommonPage()
@@ -109,7 +163,7 @@ internal sealed class SettingsForm : Form
             Padding = new Padding(8)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 178));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 308));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 346));
 
         _overview = new TextBox
         {
@@ -128,7 +182,7 @@ internal sealed class SettingsForm : Form
         basics.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
         basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         basics.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 156));
-        for (var i = 0; i < 8; i++) basics.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        for (var i = 0; i < 9; i++) basics.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         basics.Controls.Add(Label("公网域名"), 0, 0);
         _publicBaseUrl = new TextBox { Dock = DockStyle.Fill };
         _publicBaseUrl.TextChanged += (_, _) => UpdateDerivedUrls();
@@ -155,18 +209,38 @@ internal sealed class SettingsForm : Form
         _devSpacePort.ValueChanged += (_, _) => UpdateDerivedUrls();
         basics.Controls.Add(_devSpacePort, 1, 2);
         basics.Controls.Add(Label("默认：7676"), 2, 2);
-        basics.Controls.Add(Label("MCP 地址"), 0, 3);
+        basics.Controls.Add(Label("请求监控"), 0, 3);
+        var proxyPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        _requestProxyEnabled = new CheckBox { Text = "启用", AutoSize = true, Margin = new Padding(0, 7, 12, 0) };
+        _requestProxyPort = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 65535,
+            Value = 17676,
+            Width = 120
+        };
+        proxyPanel.Controls.Add(_requestProxyEnabled);
+        proxyPanel.Controls.Add(_requestProxyPort);
+        basics.Controls.Add(proxyPanel, 1, 3);
+        basics.Controls.Add(Label("代理端口"), 2, 3);
+        basics.Controls.Add(Label("MCP 地址"), 0, 4);
         _mcpUrl = ReadOnlyBox();
-        basics.Controls.Add(_mcpUrl, 1, 3);
-        basics.Controls.Add(Button("复制", (_, _) => CopyText(_mcpUrl.Text)), 2, 3);
-        basics.Controls.Add(Label("健康检查地址"), 0, 4);
+        basics.Controls.Add(_mcpUrl, 1, 4);
+        basics.Controls.Add(Button("复制", (_, _) => CopyText(_mcpUrl.Text)), 2, 4);
+        basics.Controls.Add(Label("健康检查地址"), 0, 5);
         _healthUrl = ReadOnlyBox();
-        basics.Controls.Add(_healthUrl, 1, 4);
-        basics.Controls.Add(Button("复制", (_, _) => CopyText(_healthUrl.Text)), 2, 4);
-        basics.Controls.Add(Label("当前密钥"), 0, 5);
+        basics.Controls.Add(_healthUrl, 1, 5);
+        basics.Controls.Add(Button("复制", (_, _) => CopyText(_healthUrl.Text)), 2, 5);
+        basics.Controls.Add(Label("当前密钥"), 0, 6);
         _ownerPassword = ReadOnlyBox();
         _ownerPassword.UseSystemPasswordChar = true;
-        basics.Controls.Add(_ownerPassword, 1, 5);
+        basics.Controls.Add(_ownerPassword, 1, 6);
         var secretButtons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -177,15 +251,15 @@ internal sealed class SettingsForm : Form
         _toggleOwnerPasswordButton = Button("显示", (_, _) => ToggleOwnerPassword());
         secretButtons.Controls.Add(_toggleOwnerPasswordButton);
         secretButtons.Controls.Add(Button("复制", (_, _) => CopyText(_ownerPassword.Text)));
-        basics.Controls.Add(secretButtons, 2, 5);
-        basics.Controls.Add(Label("隧道模式"), 0, 6);
+        basics.Controls.Add(secretButtons, 2, 6);
+        basics.Controls.Add(Label("隧道模式"), 0, 7);
         _cloudflaredProtocol = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         _cloudflaredProtocol.Items.AddRange(new object[] { "auto", "http2", "quic" });
-        basics.Controls.Add(_cloudflaredProtocol, 1, 6);
-        basics.Controls.Add(Label("推荐：http2"), 2, 6);
-        basics.Controls.Add(Label("Node 版本"), 0, 7);
+        basics.Controls.Add(_cloudflaredProtocol, 1, 7);
+        basics.Controls.Add(Label("推荐：http2"), 2, 7);
+        basics.Controls.Add(Label("Node 版本"), 0, 8);
         _nodeVersion = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        basics.Controls.Add(_nodeVersion, 1, 7);
+        basics.Controls.Add(_nodeVersion, 1, 8);
         layout.Controls.Add(basics, 0, 1);
 
         page.Controls.Add(layout);
@@ -239,6 +313,42 @@ internal sealed class SettingsForm : Form
         page.Controls.Add(layout);
         return page;
     }
+
+    private TabPage BuildRequestsPage()
+    {
+        var page = new TabPage("请求");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 2,
+            Padding = new Padding(12)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill };
+        buttons.Controls.Add(Button("清空显示", (_, _) => _requestList.Items.Clear()));
+        layout.Controls.Add(buttons, 0, 0);
+
+        _requestList = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true
+        };
+        _requestList.Columns.Add("时间", 150);
+        _requestList.Columns.Add("状态", 82);
+        _requestList.Columns.Add("工具 / 方法", 210);
+        _requestList.Columns.Add("HTTP", 70);
+        _requestList.Columns.Add("耗时", 90);
+        _requestList.Columns.Add("路径 / 说明", 330);
+        layout.Controls.Add(_requestList, 0, 1);
+
+        page.Controls.Add(layout);
+        return page;
+    }
+
 
     private TabPage BuildSpeedTestPage()
     {
@@ -353,7 +463,7 @@ internal sealed class SettingsForm : Form
 
         panel.Controls.Add(Label("检查频率"), 0, 1);
         _updateHours = new ComboBox { Dock = DockStyle.Left, DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
-        _updateHours.Items.AddRange(new object[] { "6 小时", "12 小时", "24 小时", "48 小时" });
+        _updateHours.Items.AddRange(new object[] { "1 小时", "3 小时", "6 小时", "12 小时", "24 小时", "48 小时" });
         panel.Controls.Add(_updateHours, 1, 1);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill };
@@ -438,6 +548,8 @@ internal sealed class SettingsForm : Form
         _publicBaseUrl.Text = config.PublicBaseUrl;
         _tunnelName.Text = config.CloudflareTunnelName;
         _devSpacePort.Value = Math.Clamp(config.DevSpacePort, 1, 65535);
+        _requestProxyEnabled.Checked = config.RequestProxyEnabled;
+        _requestProxyPort.Value = Math.Clamp(config.RequestProxyPort, 1, 65535);
         LoadOwnerPassword();
         UpdateDerivedUrls();
         _cloudflaredProtocol.SelectedItem = string.IsNullOrWhiteSpace(config.CloudflaredProtocol) ? "auto" : config.CloudflaredProtocol;
@@ -447,6 +559,8 @@ internal sealed class SettingsForm : Form
         _checkUpdates.Checked = config.CheckUpdates;
         _updateHours.SelectedItem = $"{config.UpdateCheckHours} 小时";
         LoadAllowedRoots(config.DevSpaceConfigPath);
+        LoadRequestSnapshot();
+        LoadLogViews();
         LoadRawConfigs();
         LoadAdvancedSummary(config);
         RefreshStartupStatus();
@@ -556,6 +670,202 @@ internal sealed class SettingsForm : Form
         }
     }
 
+    private void HookRequestMonitor()
+    {
+        _app.RequestMonitor.RequestAdded += OnRequestMonitorChanged;
+        _app.RequestMonitor.RequestUpdated += OnRequestMonitorChanged;
+    }
+
+    private void OnRequestMonitorChanged(object? _, McpRequestEntry entry)
+    {
+        lock (_requestUiGate)
+        {
+            _pendingRequestEntries[entry.Id] = entry;
+        }
+    }
+
+    private void LoadRequestSnapshot()
+    {
+        if (_requestList is null) return;
+        _requestList.Items.Clear();
+        foreach (var entry in _app.RequestMonitor.Snapshot())
+        {
+            _requestList.Items.Add(BuildRequestListItem(entry));
+        }
+    }
+
+    private void LoadLogViews()
+    {
+        if (_devspaceStdoutLog is not null) _devspaceStdoutLog.Text = ReadLogFile(_app.ConfigStore.Current.DevSpaceStdoutLog);
+        if (_devspaceStderrLog is not null) _devspaceStderrLog.Text = ReadLogFile(_app.ConfigStore.Current.DevSpaceStderrLog);
+        if (_tunnelStdoutLog is not null) _tunnelStdoutLog.Text = ReadLogFile(_app.ConfigStore.Current.TunnelStdoutLog);
+        if (_tunnelStderrLog is not null) _tunnelStderrLog.Text = ReadLogFile(_app.ConfigStore.Current.TunnelStderrLog);
+    }
+
+    private void FlushPendingRequestEntries()
+    {
+        if (IsDisposed || _requestList is null) return;
+
+        List<McpRequestEntry> entries;
+        lock (_requestUiGate)
+        {
+            if (_pendingRequestEntries.Count == 0) return;
+            entries = _pendingRequestEntries.Values
+                .OrderBy(entry => entry.StartedAt)
+                .ToList();
+            _pendingRequestEntries.Clear();
+        }
+
+        var snapshotById = _app.RequestMonitor.Snapshot().ToDictionary(entry => entry.Id);
+
+        BeginInvokeSafe(() =>
+        {
+            _requestList.BeginUpdate();
+            try
+            {
+                RefreshLongLivedRows(snapshotById);
+                foreach (var entry in entries)
+                {
+                    UpdateRequestEntry(entry);
+                }
+            }
+            finally
+            {
+                _requestList.EndUpdate();
+            }
+        });
+    }
+
+    private void RefreshLongLivedRows(IReadOnlyDictionary<Guid, McpRequestEntry> snapshotById)
+    {
+        if (_requestList is null) return;
+        foreach (ListViewItem item in _requestList.Items)
+        {
+            if (item.Tag is not Guid id) continue;
+            if (!snapshotById.TryGetValue(id, out var snapshot) || !snapshot.IsLongLived || !snapshot.InProgress) continue;
+            ApplyRequestListItem(item, snapshot);
+        }
+    }
+
+    private void BeginInvokeSafe(Action action)
+    {
+        if (IsDisposed) return;
+        try
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(action);
+                return;
+            }
+
+            action();
+        }
+        catch
+        {
+            // Request display is best-effort and must never affect proxy traffic.
+        }
+    }
+
+    private void AddRequestEntry(McpRequestEntry entry)
+    {
+        if (_requestList is null) return;
+
+        var item = BuildRequestListItem(entry);
+        _requestList.Items.Insert(0, item);
+        while (_requestList.Items.Count > 100)
+        {
+            _requestList.Items.RemoveAt(_requestList.Items.Count - 1);
+        }
+    }
+
+    private void UpdateRequestEntry(McpRequestEntry entry)
+    {
+        if (_requestList is null) return;
+
+        foreach (ListViewItem item in _requestList.Items)
+        {
+            if (item.Tag is not Guid id || id != entry.Id) continue;
+            ApplyRequestListItem(item, entry);
+            return;
+        }
+
+        AddRequestEntry(entry);
+    }
+
+    private static ListViewItem BuildRequestListItem(McpRequestEntry entry)
+    {
+        var item = new ListViewItem();
+        ApplyRequestListItem(item, entry);
+        return item;
+    }
+
+    private static void ApplyRequestListItem(ListViewItem item, McpRequestEntry entry)
+    {
+        var displayName = string.IsNullOrWhiteSpace(entry.ToolName)
+            ? entry.Method
+            : entry.ToolName;
+        var statusText = entry.InProgress
+            ? entry.Status
+            : entry.Status;
+        var elapsedText = entry.InProgress
+            ? entry.IsLongLived
+                ? $"已连接 {(DateTimeOffset.Now - entry.StartedAt).TotalSeconds:0}s"
+                : "..."
+            : entry.ElapsedMs is null
+                ? "-"
+                : $"{entry.ElapsedMs} ms";
+        var detailText = entry.Error
+                         ?? entry.Detail
+                         ?? entry.Path;
+        item.Tag = entry.Id;
+        var values = new[]
+        {
+            entry.StartedAt.LocalDateTime.ToString("HH:mm:ss.fff"),
+            statusText,
+            displayName,
+            entry.StatusCode?.ToString() ?? "-",
+            elapsedText,
+            detailText
+        };
+
+        item.Text = values[0];
+        while (item.SubItems.Count < values.Length) item.SubItems.Add("");
+        for (var i = 1; i < values.Length; i++) item.SubItems[i].Text = values[i];
+        item.ForeColor = entry.InProgress
+            ? entry.IsLongLived
+                ? Color.FromArgb(102, 60, 0)
+                : Color.FromArgb(40, 93, 160)
+            : entry.StatusCode is >= 200 and < 400
+                ? Color.FromArgb(24, 115, 82)
+                : Color.FromArgb(170, 92, 22);
+    }
+
+    private static string ReadLogFile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return "日志文件还不存在。";
+            return File.ReadAllText(path);
+        }
+        catch (Exception ex)
+        {
+            return $"读取日志失败：{ex.Message}";
+        }
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        _app.RequestMonitor.RequestAdded -= OnRequestMonitorChanged;
+        _app.RequestMonitor.RequestUpdated -= OnRequestMonitorChanged;
+        if (_requestUiTimer is not null)
+        {
+            _requestUiTimer.Stop();
+            _requestUiTimer.Dispose();
+        }
+
+        base.OnFormClosed(e);
+    }
+
     private async Task RefreshOverviewAsync(bool showProgress = false)
     {
         if (showProgress)
@@ -577,6 +887,7 @@ internal sealed class SettingsForm : Form
                 $"Cloudflare Tunnel：{State(tunnelRunning)}{Environment.NewLine}" +
                 $"当前公网地址：{config.PublicBaseUrl}{Environment.NewLine}" +
                 $"隧道名称：{config.CloudflareTunnelName}{Environment.NewLine}" +
+                $"请求监控：{(config.RequestProxyEnabled ? $"启用，代理端口 {config.RequestProxyPort}" : "关闭，直连 DevSpace")}{Environment.NewLine}" +
                 $"MCP 地址：{config.McpUrl}{Environment.NewLine}" +
                 $"本地连接：{State(local.Ok)}  {local.Message}{Environment.NewLine}" +
                 $"公网连接：{State(pub.Ok)}  {pub.Message}{Environment.NewLine}" +
@@ -684,7 +995,7 @@ internal sealed class SettingsForm : Form
             var config = _app.ConfigStore.Reload();
             var hostname = new Uri(config.PublicBaseUrl).Host;
             WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort);
-            WriteCloudflaredIngress(config.CloudflaredConfigPath, hostname, config.DevSpacePort);
+            WriteCloudflaredIngress(config.CloudflaredConfigPath, hostname, CloudflaredServicePort(config));
             RunCloudflaredDnsRoute(config, hostname);
             _app.Processes.Restart(ProcessRole.CloudflareTunnel);
             _app.Processes.Restart(ProcessRole.DevSpace);
@@ -707,6 +1018,8 @@ internal sealed class SettingsForm : Form
             config.NpmCommand = Path.Combine(config.NodeDirectory, "npm");
             config.DevSpacePort = (int)_devSpacePort.Value;
             config.LocalHealthUrl = $"http://127.0.0.1:{config.DevSpacePort}/healthz";
+            config.RequestProxyEnabled = _requestProxyEnabled.Checked;
+            config.RequestProxyPort = (int)_requestProxyPort.Value;
             config.PublicBaseUrl = NormalizeBaseUrl(_publicBaseUrl.Text);
             config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
             config.CloudflareTunnelName = NormalizeTunnelName(_tunnelName.Text);
@@ -717,10 +1030,11 @@ internal sealed class SettingsForm : Form
             config.CheckUpdates = _checkUpdates.Checked;
             config.UpdateCheckHours = ParseHours(_updateHours.SelectedItem?.ToString(), config.UpdateCheckHours);
             _app.ConfigStore.Save(config);
+            _app.McpProxy.EnsureState();
             SaveAllowedRoots(config.DevSpaceConfigPath);
             SaveRawConfigs();
             WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort);
-            WriteCloudflaredIngress(config.CloudflaredConfigPath, new Uri(config.PublicBaseUrl).Host, config.DevSpacePort);
+            WriteCloudflaredIngress(config.CloudflaredConfigPath, new Uri(config.PublicBaseUrl).Host, CloudflaredServicePort(config));
             LoadAdvancedSummary(config);
             LoadRawConfigs();
             UpdateDerivedUrls();
@@ -850,6 +1164,9 @@ internal sealed class SettingsForm : Form
 
         return normalized;
     }
+
+    private static int CloudflaredServicePort(ManagerConfig config) =>
+        config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
 
     private static string? ReadCloudflaredTunnelId(string path)
     {

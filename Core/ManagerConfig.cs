@@ -18,8 +18,11 @@ internal sealed class ManagerConfig
     public string LocalHealthUrl { get; set; } = "http://127.0.0.1:7676/healthz";
     public string PublicHealthUrl { get; set; } = "https://devspace.onemem.cc/healthz";
     public string PublicBaseUrl { get; set; } = "https://devspace.onemem.cc";
+    public bool RequestProxyEnabled { get; set; }
+    public int RequestProxyPort { get; set; } = 17676;
     public int HealthCheckSeconds { get; set; } = 60;
     public int UpdateCheckHours { get; set; } = 24;
+    public string LastNotifiedUpdateVersion { get; set; } = "";
     public bool AutoRestart { get; set; } = true;
     public bool AutoStartDevSpace { get; set; } = true;
     public bool AutoStartTunnel { get; set; } = true;
@@ -31,6 +34,10 @@ internal sealed class ManagerConfig
     public bool DevSpaceSkills { get; set; } = true;
     public string DevSpaceAgentDir { get; set; } = "";
     public string DevSpaceSkillPaths { get; set; } = "";
+    public string ActiveBrowserProfileId { get; set; } = "default";
+    public List<BrowserProfileConfig> BrowserProfiles { get; set; } = [];
+    public bool LocalDebugEnabled { get; set; }
+    public int LocalDebugPort { get; set; } = 9223;
 
     [JsonIgnore]
     public string DevSpaceStdoutLog => Path.Combine(AppPaths.LogDirectory, "devspace.out.log");

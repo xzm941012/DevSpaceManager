@@ -1,33 +1,40 @@
 using DevSpaceManager.Core;
 using DevSpaceManager.Services;
 using DevSpaceManager.UI;
+using System.Windows;
 
 namespace DevSpaceManager;
 
 internal static class Program
 {
     [STAThread]
-    private static async Task<int> Main(string[] args)
+    private static int Main(string[] args)
     {
         if (args.Any(arg => string.Equals(arg, "--worker", StringComparison.OrdinalIgnoreCase)))
         {
             using var workerApp = AppHost.Create();
-            await workerApp.Worker.RunAsync();
+            workerApp.Worker.RunAsync().GetAwaiter().GetResult();
             return 0;
         }
 
         using var singleInstance = SingleInstanceCoordinator.Create();
         if (!singleInstance.IsFirstInstance)
         {
-            await SingleInstanceCoordinator.SignalExistingAsync();
+            SingleInstanceCoordinator.SignalExistingAsync().GetAwaiter().GetResult();
             return 0;
         }
 
         using var app = AppHost.Create();
-        ApplicationConfiguration.Initialize();
+        _ = new System.Windows.Application
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown
+        };
+        System.Windows.Forms.Application.EnableVisualStyles();
+        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
         using var context = new TrayApplicationContext(app);
         singleInstance.Start(context.RequestShowSettings);
-        Application.Run(context);
+        System.Windows.Forms.Application.Run(context);
+        System.Windows.Application.Current.Shutdown();
         return 0;
     }
 }

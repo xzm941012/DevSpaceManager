@@ -9,11 +9,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppHost _app;
     private readonly NotifyIcon _tray;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly System.Windows.Forms.Timer _startupTimer;
     private readonly Control _dispatcher = new();
-    private SettingsForm? _settingsForm;
+    private MainWindow? _mainWindow;
     private bool _refreshing;
     private bool _healthy;
     private bool _exiting;
+    private DateTimeOffset _lastBackgroundUpdateCheck = DateTimeOffset.MinValue;
 
     public TrayApplicationContext(AppHost app)
     {
@@ -36,9 +38,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.DoubleClick += (_, _) => ShowSettings();
 
         _timer = new System.Windows.Forms.Timer { Interval = 30_000 };
-        _timer.Tick += async (_, _) => await RefreshStatusAsync();
+        _timer.Tick += async (_, _) =>
+        {
+            await RefreshStatusAsync();
+            await CheckUpdatesInBackgroundAsync();
+        };
         _timer.Start();
+
+        _startupTimer = new System.Windows.Forms.Timer { Interval = 1 };
+        _startupTimer.Tick += (_, _) =>
+        {
+            _startupTimer.Stop();
+            ShowSettings();
+            _ = StartBackgroundServicesAsync();
+        };
+        _startupTimer.Start();
+    }
+
+    private async Task StartBackgroundServicesAsync()
+    {
+        await Task.Delay(1000);
+        _ = Task.Run(() => _app.McpProxy.EnsureState());
         _ = RefreshStatusAsync();
+        _ = CheckUpdatesInBackgroundAsync();
         _ = InitializeServicesAsync();
     }
 
@@ -124,6 +146,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             var progress = new Progress<string>(message => Log.Update(message));
             await _app.Updates.UpdateDevSpaceAsync(progress);
+            var config = _app.ConfigStore.Reload();
+            config.LastNotifiedUpdateVersion = update.LatestVersion;
+            _app.ConfigStore.Save(config);
             var restart = MessageBox.Show(
                 "更新完成。现在重启 DevSpace 吗？",
                 "DevSpace 管理器",
@@ -137,6 +162,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task CheckUpdatesInBackgroundAsync()
+    {
+        try
+        {
+            var config = _app.ConfigStore.Reload();
+            if (!config.CheckUpdates) return;
+            if (DateTimeOffset.Now - _lastBackgroundUpdateCheck < TimeSpan.FromHours(config.UpdateCheckHours)) return;
+
+            _lastBackgroundUpdateCheck = DateTimeOffset.Now;
+            var update = await _app.Updates.CheckDevSpaceAsync();
+            if (!update.HasUpdate) return;
+            if (string.Equals(config.LastNotifiedUpdateVersion, update.LatestVersion, StringComparison.OrdinalIgnoreCase)) return;
+
+            config.LastNotifiedUpdateVersion = update.LatestVersion;
+            _app.ConfigStore.Save(config);
+            _tray.ShowBalloonTip(
+                5000,
+                "发现 DevSpace 新版本",
+                $"{update.CurrentVersion} -> {update.LatestVersion}{Environment.NewLine}可在托盘菜单或设置页执行更新。",
+                ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.Update($"后台检查更新失败：{ex.Message}");
         }
     }
 
@@ -199,44 +251,37 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             Log.App("ShowSettings requested.");
-            if (_settingsForm is null || _settingsForm.IsDisposed)
+            if (_mainWindow is null)
             {
-                _settingsForm = new SettingsForm(_app)
+                _mainWindow = new MainWindow(_app);
+                _mainWindow.Closing += (_, args) =>
                 {
-                    ShowInTaskbar = true
-                };
-                _settingsForm.HandleCreated += (_, _) => Log.App($"Settings handle created: {_settingsForm.Handle}.");
-                _settingsForm.FormClosing += (_, args) =>
-                {
-                    if (!_exiting && args.CloseReason != CloseReason.ApplicationExitCall)
+                    if (!_exiting)
                     {
                         args.Cancel = true;
-                        _settingsForm.Hide();
+                        _mainWindow.Hide();
                     }
                 };
-                _settingsForm.FormClosed += (_, _) => _settingsForm = null;
-                Log.App("Settings form created.");
+                _mainWindow.Closed += (_, _) => _mainWindow = null;
+                Log.App("Main window created.");
             }
 
-            if (!_settingsForm.Visible)
+            if (!_mainWindow.IsVisible)
             {
-                _settingsForm.Show();
-                Log.App("Settings form shown.");
+                _mainWindow.Show();
+                Log.App("Main window shown.");
             }
 
-            if (_settingsForm.WindowState == FormWindowState.Minimized)
+            if (_mainWindow.WindowState == System.Windows.WindowState.Minimized)
             {
-                _settingsForm.WindowState = FormWindowState.Normal;
+                _mainWindow.WindowState = System.Windows.WindowState.Normal;
             }
 
-            _settingsForm.BringToFront();
-            _settingsForm.Activate();
-            _settingsForm.TopMost = true;
-            _settingsForm.TopMost = false;
-            _settingsForm.Focus();
-            NativeMethods.ShowWindow(_settingsForm.Handle, NativeMethods.SwRestore);
-            NativeMethods.SetForegroundWindow(_settingsForm.Handle);
-            Log.App($"Settings form activated. Visible={_settingsForm.Visible}, WindowState={_settingsForm.WindowState}.");
+            _mainWindow.Activate();
+            _mainWindow.Topmost = true;
+            _mainWindow.Topmost = false;
+            _mainWindow.Focus();
+            Log.App($"Main window activated. Visible={_mainWindow.IsVisible}, WindowState={_mainWindow.WindowState}.");
         }
         catch (Exception ex)
         {
@@ -274,12 +319,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (disposing)
         {
             _exiting = true;
-            if (_settingsForm is not null && !_settingsForm.IsDisposed)
+            if (_mainWindow is not null)
             {
-                _settingsForm.Close();
-                _settingsForm.Dispose();
+                _mainWindow.Close();
+                _mainWindow = null;
             }
             _timer.Dispose();
+            _startupTimer.Dispose();
             _dispatcher.Dispose();
             _tray.Visible = false;
             _tray.Icon?.Dispose();

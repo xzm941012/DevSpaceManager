@@ -118,9 +118,45 @@ internal sealed class ManagerConfigStore
             ? DerivePublicBaseUrl(config.PublicHealthUrl)
             : config.PublicBaseUrl.TrimEnd('/');
         config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+        config.RequestProxyPort = config.RequestProxyPort is >= 1 and <= 65535
+            ? config.RequestProxyPort
+            : 17676;
+        config.LocalDebugPort = config.LocalDebugPort is >= 1024 and <= 65535
+            ? config.LocalDebugPort
+            : 9223;
+        config.UpdateCheckHours = config.UpdateCheckHours is >= 1 and <= 168
+            ? config.UpdateCheckHours
+            : 24;
         config.DevSpaceAgentDir = Blank(config.DevSpaceAgentDir)
             ? Path.Combine(user, ".codex")
             : config.DevSpaceAgentDir;
+        if (config.BrowserProfiles.Count == 0)
+        {
+            config.BrowserProfiles.Add(new BrowserProfileConfig
+            {
+                Id = "default",
+                Name = "默认",
+                UserDataFolder = Path.Combine(AppPaths.BrowserProfilesDirectory, "default"),
+                Language = "zh-CN"
+            });
+        }
+
+        foreach (var profile in config.BrowserProfiles)
+        {
+            profile.Id = Blank(profile.Id) ? "default" : profile.Id.Trim();
+            profile.Name = Blank(profile.Name) ? profile.Id : profile.Name.Trim();
+            profile.UserDataFolder = Blank(profile.UserDataFolder)
+                ? Path.Combine(AppPaths.BrowserProfilesDirectory, profile.Id)
+                : profile.UserDataFolder;
+            profile.Language = Blank(profile.Language) ? "zh-CN" : profile.Language.Trim();
+        }
+
+        if (Blank(config.ActiveBrowserProfileId) ||
+            config.BrowserProfiles.All(profile => !string.Equals(profile.Id, config.ActiveBrowserProfileId, StringComparison.OrdinalIgnoreCase)))
+        {
+            config.ActiveBrowserProfileId = config.BrowserProfiles[0].Id;
+        }
+
         config.CloudflaredPath = Blank(config.CloudflaredPath)
             ? ExecutableResolver.ResolveCloudflared("cloudflared.exe")
             : ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);

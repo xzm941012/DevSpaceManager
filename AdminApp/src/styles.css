@@ -1,0 +1,291 @@
+:root {
+  color: #20201d;
+  background: #ffffff;
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #ffffff;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.settings-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  background: #ffffff;
+}
+
+.sidebar {
+  border-right: 1px solid #ededeb;
+  background: #fbfbfa;
+  padding: 16px 10px;
+}
+
+.sidebar-title {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  color: #2b2b27;
+  font-weight: 600;
+}
+
+.nav-list {
+  display: grid;
+  gap: 3px;
+  margin-top: 14px;
+}
+
+.nav-item {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 0 9px;
+  color: #676761;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: #f0f0ed;
+  color: #242421;
+}
+
+.nav-item.active {
+  background: #ececea;
+  color: #181815;
+}
+
+.content {
+  min-width: 0;
+  padding: 22px 26px 24px;
+  background: #ffffff;
+}
+
+.content-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #ededeb;
+}
+
+.content-header h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.content-header p {
+  margin: 5px 0 0;
+  color: #777770;
+  line-height: 18px;
+}
+
+.settings-panel {
+  margin-top: 8px;
+}
+
+.setting-row {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid #eeeeeb;
+  padding: 13px 0;
+}
+
+.setting-copy {
+  min-width: 0;
+}
+
+.setting-title {
+  color: #242421;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.setting-description {
+  max-width: 520px;
+  margin-top: 3px;
+  color: #777770;
+  font-size: 12px;
+  line-height: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setting-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: #686862;
+}
+
+.panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 18px;
+}
+
+.panel-footer p {
+  margin: 0;
+  color: #777770;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.ghost-button,
+.secondary-button,
+.primary-button {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 7px;
+  border: 1px solid #deded9;
+  background: #ffffff;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.ghost-button:hover,
+.secondary-button:hover {
+  background: #f5f5f3;
+}
+
+.primary-button {
+  border-color: #111111;
+  background: #111111;
+  color: #ffffff;
+  min-width: 86px;
+}
+
+.primary-button:disabled,
+.ghost-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.number-input {
+  width: 96px;
+  height: 32px;
+  border: 1px solid #d9d9d4;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 0 10px;
+  color: #20201d;
+  outline: none;
+}
+
+.number-input:focus {
+  border-color: #9f9f98;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
+.switch {
+  width: 38px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: #d7d7d2;
+  padding: 2px;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.switch span {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+  transition: transform 160ms ease;
+}
+
+.switch.checked {
+  background: #111111;
+}
+
+.switch.checked span {
+  transform: translateX(16px);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.status-pill.ok {
+  background: #e7f4ec;
+  color: #1f7a4f;
+}
+
+.status-pill.warn {
+  background: #f5efe2;
+  color: #8a5a13;
+}
+
+.muted-value {
+  color: #777770;
+  font-size: 12px;
+}
+
+.error-banner {
+  margin-top: 14px;
+  border: 1px solid #f0c7c7;
+  border-radius: 8px;
+  background: #fff6f6;
+  color: #a33232;
+  padding: 10px 12px;
+}
+
+.empty-state {
+  margin-top: 20px;
+  color: #777770;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

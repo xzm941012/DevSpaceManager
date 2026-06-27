@@ -6,12 +6,14 @@ namespace DevSpaceManager.Services;
 internal sealed class ManagedProcessService : IDisposable
 {
     private readonly ManagerConfigStore _configStore;
+    private readonly McpProxyService _proxy;
     private Process? _devspace;
     private Process? _tunnel;
 
-    public ManagedProcessService(ManagerConfigStore configStore)
+    public ManagedProcessService(ManagerConfigStore configStore, McpProxyService proxy)
     {
         _configStore = configStore;
+        _proxy = proxy;
     }
 
     public bool IsRunning(ProcessRole role)
@@ -22,9 +24,14 @@ internal sealed class ManagedProcessService : IDisposable
 
     public void Start(ProcessRole role)
     {
+        var config = _configStore.Reload();
+        if (role == ProcessRole.CloudflareTunnel)
+        {
+            _proxy.EnsureState();
+        }
+
         if (IsRunning(role)) return;
 
-        var config = _configStore.Reload();
         if (role == ProcessRole.DevSpace)
         {
             _devspace = StartDevSpace(config);
@@ -46,6 +53,11 @@ internal sealed class ManagedProcessService : IDisposable
         {
             KillProcessTree(existing);
         }
+
+        if (role == ProcessRole.CloudflareTunnel)
+        {
+            _proxy.Stop();
+        }
     }
 
     public void Restart(ProcessRole role)
@@ -64,6 +76,7 @@ internal sealed class ManagedProcessService : IDisposable
     {
         Stop(ProcessRole.CloudflareTunnel);
         Stop(ProcessRole.DevSpace);
+        _proxy.Stop();
     }
 
     public void RestartAll()
@@ -102,7 +115,7 @@ internal sealed class ManagedProcessService : IDisposable
     {
         var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
         EnsureFile(cloudflaredPath, "cloudflared");
-        var args = $"tunnel run {QuoteArg(config.CloudflareTunnelName)}";
+        var args = "tunnel";
         if (string.Equals(config.CloudflaredProtocol, "http2", StringComparison.OrdinalIgnoreCase))
         {
             args += " --protocol http2";
@@ -111,6 +124,7 @@ internal sealed class ManagedProcessService : IDisposable
         {
             args += " --protocol quic";
         }
+        args += $" run {QuoteArg(config.CloudflareTunnelName)}";
 
         var start = CommandProcess.Create(cloudflaredPath, args);
         start.UseShellExecute = false;
@@ -207,5 +221,6 @@ internal sealed class ManagedProcessService : IDisposable
     {
         _devspace?.Dispose();
         _tunnel?.Dispose();
+        _proxy.Stop();
     }
 }

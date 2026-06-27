@@ -23,6 +23,9 @@ internal static class AppPaths
     public static string AppLogPath { get; } =
         Path.Combine(LogDirectory, "app.log");
 
+    public static string BrowserProfilesDirectory { get; } =
+        Path.Combine(AppDataDirectory, "browser-profiles");
+
     public static string DevSpaceAuthPath { get; } =
         Path.Combine(UserProfile, ".devspace", "auth.json");
 

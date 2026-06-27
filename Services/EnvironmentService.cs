@@ -530,6 +530,7 @@ internal sealed class EnvironmentService
         Directory.CreateDirectory(AppPaths.CloudflaredDirectory);
         var path = Path.Combine(AppPaths.AppDataDirectory, "setup-cloudflare-tunnel.ps1");
         var hostname = new Uri(config.PublicBaseUrl).Host;
+        var servicePort = config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
         var credentialsGlob = Path.Combine(AppPaths.CloudflaredDirectory, "*.json");
         var content = $$"""
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -541,7 +542,7 @@ internal sealed class EnvironmentService
         $cloudflared = "{{cloudflaredPath}}"
         $tunnelName = "{{config.CloudflareTunnelName}}"
         $hostname = "{{hostname}}"
-        $port = {{config.DevSpacePort}}
+        $port = {{servicePort}}
         $configPath = "{{config.CloudflaredConfigPath}}"
         $certPath = "{{AppPaths.CloudflaredCertPath}}"
         $cloudflaredDir = "{{AppPaths.CloudflaredDirectory}}"
