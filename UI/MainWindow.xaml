@@ -124,68 +124,102 @@
             </Setter>
         </Style>
 
+        <Style x:Key="ChromeMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="MinWidth" Value="52" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#20201D" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Grid>
+                            <Border x:Name="TopBorder"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="4"
+                                    Padding="{TemplateBinding Padding}">
+                                <Grid>
+                                    <TextBlock x:Name="HeaderText"
+                                               Text="{TemplateBinding Header}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Foreground="{TemplateBinding Foreground}" />
+                                    <TextBlock x:Name="SubmenuText"
+                                               Text="{TemplateBinding Header}"
+                                               HorizontalAlignment="Left"
+                                               VerticalAlignment="Center"
+                                               Foreground="#20201D"
+                                               Visibility="Collapsed" />
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}"
+                                   Focusable="False"
+                                   PopupAnimation="Fade">
+                                <Grid Background="Transparent" Margin="0,4,8,10">
+                                    <Border Background="#FFFFFFFF"
+                                            BorderBrush="#D8D8D3"
+                                            BorderThickness="1"
+                                            CornerRadius="7"
+                                            Padding="6"
+                                            MinWidth="88"
+                                            SnapsToDevicePixels="True">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="18"
+                                                              ShadowDepth="2"
+                                                              Opacity="0.16"
+                                                              Color="#000000" />
+                                        </Border.Effect>
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                    </Border>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="TopBorder" Property="Background" Value="#E8E8E5" />
+                            </Trigger>
+                            <Trigger Property="Role" Value="SubmenuItem">
+                                <Setter Property="Padding" Value="10,6" />
+                                <Setter Property="MinWidth" Value="76" />
+                                <Setter Property="Foreground" Value="#20201D" />
+                                <Setter TargetName="TopBorder" Property="HorizontalAlignment" Value="Stretch" />
+                                <Setter TargetName="HeaderText" Property="Visibility" Value="Collapsed" />
+                                <Setter TargetName="SubmenuText" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#A8A8A1" />
+                                <Setter TargetName="HeaderText" Property="Foreground" Value="#A8A8A1" />
+                                <Setter TargetName="SubmenuText" Property="Foreground" Value="#A8A8A1" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="ChromeMenuStyle" TargetType="Menu">
             <Setter Property="FontSize" Value="13" />
             <Setter Property="Foreground" Value="#6F6F68" />
-            <Setter Property="ItemContainerStyle">
+            <Setter Property="ItemContainerStyle" Value="{StaticResource ChromeMenuItemStyle}" />
+        </Style>
+
+        <Style x:Key="ChromeMenuSeparatorStyle" TargetType="Separator">
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Height" Value="9" />
+            <Setter Property="Width" Value="64" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Template">
                 <Setter.Value>
-                    <Style TargetType="MenuItem">
-                        <Setter Property="Padding" Value="9,5" />
-                        <Setter Property="MinWidth" Value="52" />
-                        <Setter Property="Background" Value="Transparent" />
-                        <Setter Property="Foreground" Value="#6F6F68" />
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="MenuItem">
-                                    <Grid>
-                                        <Border x:Name="TopBorder"
-                                                Background="{TemplateBinding Background}"
-                                                CornerRadius="4"
-                                                Padding="{TemplateBinding Padding}">
-                                            <ContentPresenter ContentSource="Header"
-                                                              RecognizesAccessKey="True"
-                                                              HorizontalAlignment="Center"
-                                                              VerticalAlignment="Center" />
-                                        </Border>
-                                        <Popup x:Name="PART_Popup"
-                                               Placement="Bottom"
-                                               AllowsTransparency="True"
-                                               IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}"
-                                               Focusable="False"
-                                               PopupAnimation="Fade">
-                                            <Border Background="White"
-                                                    BorderBrush="#DDDDD8"
-                                                    BorderThickness="1"
-                                                    CornerRadius="7"
-                                                    Padding="6"
-                                                    MinWidth="148">
-                                                <Border.Effect>
-                                                    <DropShadowEffect BlurRadius="18"
-                                                                      ShadowDepth="5"
-                                                                      Opacity="0.18"
-                                                                      Color="#000000" />
-                                                </Border.Effect>
-                                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
-                                            </Border>
-                                        </Popup>
-                                    </Grid>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsHighlighted" Value="True">
-                                            <Setter TargetName="TopBorder" Property="Background" Value="#E8E8E5" />
-                                        </Trigger>
-                                        <Trigger Property="Role" Value="SubmenuItem">
-                                            <Setter Property="Padding" Value="12,7" />
-                                            <Setter Property="MinWidth" Value="136" />
-                                            <Setter Property="Foreground" Value="#20201D" />
-                                        </Trigger>
-                                        <Trigger Property="IsEnabled" Value="False">
-                                            <Setter Property="Foreground" Value="#A8A8A1" />
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1"
+                                Background="#E1E1DC"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Center"
+                                SnapsToDevicePixels="True" />
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -242,27 +276,31 @@
                           BorderThickness="0"
                           VerticalAlignment="Center"
                           Style="{StaticResource ChromeMenuStyle}">
-                        <MenuItem Header="文件">
+                        <Menu.Resources>
+                            <Style TargetType="MenuItem" BasedOn="{StaticResource ChromeMenuItemStyle}" />
+                            <Style TargetType="Separator" BasedOn="{StaticResource ChromeMenuSeparatorStyle}" />
+                        </Menu.Resources>
+                        <MenuItem Header="文件" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="设置" Click="SettingsMenuItem_OnClick" />
-                            <Separator />
+                            <Separator Style="{StaticResource ChromeMenuSeparatorStyle}" />
                             <MenuItem Header="退出" Click="ExitMenuItem_OnClick" />
                         </MenuItem>
-                        <MenuItem Header="编辑">
+                        <MenuItem Header="编辑" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="Undo    Ctrl+Z" Command="ApplicationCommands.Undo" />
                             <MenuItem Header="Redo    Ctrl+Y" Command="ApplicationCommands.Redo" />
-                            <Separator />
+                            <Separator Style="{StaticResource ChromeMenuSeparatorStyle}" />
                             <MenuItem Header="Cut       Ctrl+X" Command="ApplicationCommands.Cut" />
                             <MenuItem Header="Copy     Ctrl+C" Command="ApplicationCommands.Copy" />
                             <MenuItem Header="Paste    Ctrl+V" Command="ApplicationCommands.Paste" />
                             <MenuItem Header="Delete" Command="ApplicationCommands.Delete" />
-                            <Separator />
+                            <Separator Style="{StaticResource ChromeMenuSeparatorStyle}" />
                             <MenuItem Header="Select All  Ctrl+A" Command="ApplicationCommands.SelectAll" />
                         </MenuItem>
-                        <MenuItem Header="视图">
+                        <MenuItem Header="视图" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="刷新 ChatGPT" Click="RefreshMenuItem_OnClick" />
                             <MenuItem Header="打开 ChatGPT 首页" Click="OpenChatGptMenuItem_OnClick" />
                         </MenuItem>
-                        <MenuItem Header="帮助">
+                        <MenuItem Header="帮助" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="设置与诊断" Click="SettingsMenuItem_OnClick" />
                         </MenuItem>
                     </Menu>

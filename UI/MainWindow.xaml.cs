@@ -1,4 +1,5 @@
 using DevSpaceManager.Core;
+using DevSpaceManager.Services;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using System.Diagnostics;
@@ -109,7 +110,7 @@ public sealed partial class MainWindow
             chatGptView.CoreWebView2.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
-                chatGptView.CoreWebView2.Navigate(args.Uri);
+                OpenExternalNewWindowUri(args.Uri);
             };
             _chatGptEventsAttached = true;
         }
@@ -436,6 +437,28 @@ public sealed partial class MainWindow
         ShowChatGptNavigationGuard();
         _lastRequestedChatGptUri = "https://chatgpt.com";
         _chatGptView?.CoreWebView2?.Navigate(_lastRequestedChatGptUri);
+    }
+
+    private static void OpenExternalNewWindowUri(string? uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ||
+            (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+        {
+            Log.App($"Ignored WebView2 new-window request with unsupported URI: {uri}");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(parsed.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.App($"Failed to open WebView2 new-window URI in default browser: {parsed.AbsoluteUri} - {ex}");
+        }
     }
 
     private void ErrorRefreshButton_OnClick(object sender, System.Windows.RoutedEventArgs e)

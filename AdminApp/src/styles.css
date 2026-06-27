@@ -36,20 +36,9 @@ button {
   padding: 16px 10px;
 }
 
-.sidebar-title {
-  height: 30px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 9px;
-  color: #2b2b27;
-  font-weight: 600;
-}
-
 .nav-list {
   display: grid;
   gap: 3px;
-  margin-top: 14px;
 }
 
 .nav-item {
@@ -98,6 +87,12 @@ button {
   line-height: 24px;
   font-weight: 600;
   letter-spacing: 0;
+}
+
+.title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .content-header p {
@@ -184,11 +179,26 @@ button {
   background: #f5f5f3;
 }
 
+.ghost-button:active,
+.secondary-button:active {
+  background: #eeeeeb;
+  transform: translateY(1px);
+}
+
 .primary-button {
   border-color: #111111;
   background: #111111;
   color: #ffffff;
   min-width: 86px;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #2a2a27;
+}
+
+.primary-button:active:not(:disabled) {
+  background: #000000;
+  transform: translateY(1px);
 }
 
 .primary-button:disabled,
@@ -272,6 +282,15 @@ button {
   border-radius: 8px;
   background: #fff6f6;
   color: #a33232;
+  padding: 10px 12px;
+}
+
+.toast-banner {
+  margin-top: 14px;
+  border: 1px solid #cfe6d8;
+  border-radius: 8px;
+  background: #f3fbf6;
+  color: #21633f;
   padding: 10px 12px;
 }
 

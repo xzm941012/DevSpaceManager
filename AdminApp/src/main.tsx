@@ -96,6 +96,7 @@ function App() {
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [toast, setToast] = React.useState("");
   const [debugEnabled, setDebugEnabled] = React.useState(false);
   const [debugPort, setDebugPort] = React.useState("9223");
 
@@ -122,9 +123,11 @@ function App() {
     const port = Number(debugPort);
     setSaving(true);
     setError("");
+    setToast("");
     try {
       const config = await bridge<PublicConfig>("debug.save", { enabled: debugEnabled, port });
       setSnapshot((current) => (current ? { ...current, config } : current));
+      setToast("设置已保存，重启应用后生效。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -144,10 +147,6 @@ function App() {
   return (
     <main className="settings-shell">
       <aside className="sidebar">
-        <div className="sidebar-title">
-          <Settings size={15} strokeWidth={1.4} aria-hidden="true" />
-          <span>设置</span>
-        </div>
         <nav className="nav-list" aria-label="设置分类">
           {sections.map((item) => {
             const Icon = item.icon;
@@ -169,16 +168,20 @@ function App() {
       <section className="content">
         <header className="content-header">
           <div>
-            <h1>{sections.find((item) => item.key === active)?.label}</h1>
+            <h1 className="title-row">
+              <Settings size={16} strokeWidth={1.4} aria-hidden="true" />
+              <span>{sections.find((item) => item.key === active)?.label}</span>
+            </h1>
             <p>{subtitle(active)}</p>
           </div>
           <button className="ghost-button" onClick={load} disabled={loading} type="button">
-            {loading ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <RefreshCw size={14} strokeWidth={1.4} />}
+            <RefreshCw className={loading ? "spin" : undefined} size={14} strokeWidth={1.4} />
             刷新
           </button>
         </header>
 
         {error && <div className="error-banner">{error}</div>}
+        {toast && <div className="toast-banner">{toast}</div>}
 
         {!snapshot || !config ? (
           <div className="empty-state">{loading ? "正在读取设置..." : "暂无设置数据"}</div>
@@ -293,7 +296,7 @@ function DebugSettings({
         <p>端口只用于本机调试。ChatGPT 页面仍然不会获得本地 bridge 权限。</p>
         <button className="primary-button" onClick={onSave} disabled={saving} type="button">
           {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <CheckCircle2 size={14} strokeWidth={1.4} />}
-          保存
+          {saving ? "保存中" : "保存"}
         </button>
       </div>
     </div>
