@@ -545,7 +545,7 @@ internal sealed class SettingsForm : Form
     {
         var config = _app.ConfigStore.Reload();
         LoadNodeVersions(config.NodeVersion);
-        _publicBaseUrl.Text = config.PublicBaseUrl;
+        _publicBaseUrl.Text = string.IsNullOrWhiteSpace(config.FixedPublicBaseUrl) ? config.PublicBaseUrl : config.FixedPublicBaseUrl;
         _tunnelName.Text = config.CloudflareTunnelName;
         _devSpacePort.Value = Math.Clamp(config.DevSpacePort, 1, 65535);
         _requestProxyEnabled.Checked = config.RequestProxyEnabled;
@@ -993,10 +993,9 @@ internal sealed class SettingsForm : Form
         await RunBusyAsync("正在同步域名...", async () =>
         {
             SaveAll();
-            var config = _app.ConfigStore.Reload();
-            var hostname = new Uri(config.PublicBaseUrl).Host;
-            WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort);
-            WriteCloudflaredIngress(config.CloudflaredConfigPath, hostname, CloudflaredServicePort(config));
+            var config = _app.PublicEndpoints.ActivateFixedMode();
+            var hostname = new Uri(_app.PublicEndpoints.ResolveFixedPublicBaseUrl(config)).Host;
+            PublicEndpointSyncService.WriteCloudflaredIngress(config.CloudflaredConfigPath, hostname, PublicEndpointSyncService.CloudflaredServicePort(config));
             RunCloudflaredDnsRoute(config, hostname);
             _app.Processes.Restart(ProcessRole.CloudflareTunnel);
             _app.Processes.Restart(ProcessRole.DevSpace);
@@ -1021,8 +1020,12 @@ internal sealed class SettingsForm : Form
             config.LocalHealthUrl = $"http://127.0.0.1:{config.DevSpacePort}/healthz";
             config.RequestProxyEnabled = _requestProxyEnabled.Checked;
             config.RequestProxyPort = (int)_requestProxyPort.Value;
-            config.PublicBaseUrl = NormalizeBaseUrl(_publicBaseUrl.Text);
-            config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+            config.FixedPublicBaseUrl = _app.PublicEndpoints.NormalizeBaseUrl(_publicBaseUrl.Text);
+            if (!config.UseTemporaryCloudflareTunnel)
+            {
+                config.PublicBaseUrl = config.FixedPublicBaseUrl;
+                config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+            }
             config.CloudflareTunnelName = NormalizeTunnelName(_tunnelName.Text);
             config.CloudflaredProtocol = _cloudflaredProtocol.SelectedItem?.ToString() ?? "auto";
             config.AutoStartDevSpace = _autoStartDevSpace.Checked;
@@ -1034,8 +1037,7 @@ internal sealed class SettingsForm : Form
             _app.McpProxy.EnsureState();
             SaveAllowedRoots(config.DevSpaceConfigPath);
             SaveRawConfigs();
-            WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort);
-            WriteCloudflaredIngress(config.CloudflaredConfigPath, new Uri(config.PublicBaseUrl).Host, CloudflaredServicePort(config));
+            config = _app.PublicEndpoints.SyncCurrentModeToConfigs();
             LoadAdvancedSummary(config);
             LoadRawConfigs();
             UpdateDerivedUrls();
@@ -1130,16 +1132,6 @@ internal sealed class SettingsForm : Form
         return int.TryParse(digits, out var value) ? value : fallback;
     }
 
-    private static string NormalizeBaseUrl(string value)
-    {
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
-        {
-            throw new InvalidOperationException("公网地址格式不正确，请输入类似 https://devspace.onemem.cc");
-        }
-
-        return $"{uri.Scheme}://{uri.Authority}";
-    }
-
     private static string NormalizeTunnelName(string value)
     {
         var normalized = value.Trim().ToLowerInvariant();
@@ -1165,9 +1157,6 @@ internal sealed class SettingsForm : Form
 
         return normalized;
     }
-
-    private static int CloudflaredServicePort(ManagerConfig config) =>
-        config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
 
     private static string? ReadCloudflaredTunnelId(string path)
     {
@@ -1375,59 +1364,6 @@ internal sealed class SettingsForm : Form
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content);
-    }
-
-    private static void WriteCloudflaredIngress(string path, string hostname, int port)
-    {
-        var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : new List<string>();
-        if (lines.Count == 0)
-        {
-            lines.Add("ingress:");
-            lines.Add($"  - hostname: {hostname}");
-            lines.Add($"    service: http://localhost:{port}");
-            lines.Add("  - service: http_status:404");
-            File.WriteAllLines(path, lines);
-            return;
-        }
-
-        var changed = false;
-        for (var i = 0; i < lines.Count; i++)
-        {
-            if (lines[i].Contains("hostname:", StringComparison.OrdinalIgnoreCase))
-            {
-                lines[i] = $"  - hostname: {hostname}";
-                changed = true;
-                continue;
-            }
-
-            if (lines[i].Contains("service: http://localhost:", StringComparison.OrdinalIgnoreCase) ||
-                lines[i].Contains("service: http://127.0.0.1:", StringComparison.OrdinalIgnoreCase))
-            {
-                lines[i] = $"    service: http://localhost:{port}";
-                changed = true;
-            }
-        }
-
-        if (!changed)
-        {
-            lines.Clear();
-            lines.Add("ingress:");
-            lines.Add($"  - hostname: {hostname}");
-            lines.Add($"    service: http://localhost:{port}");
-            lines.Add("  - service: http_status:404");
-        }
-
-        File.WriteAllLines(path, lines);
-    }
-
-    private static void WriteDevSpaceConnection(string path, string publicBaseUrl, int port)
-    {
-        var root = ReadJsonObjectOrEmpty(path);
-        root["publicBaseUrl"] = publicBaseUrl.TrimEnd('/');
-        root["port"] = port;
-        root.TryAdd("host", "127.0.0.1");
-        root.TryAdd("allowedRoots", Array.Empty<string>());
-        WriteTextFile(path, JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static Dictionary<string, object?> ReadJsonObjectOrEmpty(string path)

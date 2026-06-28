@@ -136,8 +136,12 @@ internal sealed class AdminBridgeService
         var config = _app.ConfigStore.Reload();
         if (payload.TryGetProperty("publicBaseUrl", out var publicBaseUrl))
         {
-            config.PublicBaseUrl = NormalizeBaseUrl(publicBaseUrl.GetString() ?? "");
-            config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+            config.FixedPublicBaseUrl = _app.PublicEndpoints.NormalizeBaseUrl(publicBaseUrl.GetString() ?? "");
+            if (!config.UseTemporaryCloudflareTunnel)
+            {
+                config.PublicBaseUrl = config.FixedPublicBaseUrl;
+                config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+            }
         }
 
         if (payload.TryGetProperty("tunnelName", out var tunnelName))
@@ -174,6 +178,7 @@ internal sealed class AdminBridgeService
         }
 
         _app.ConfigStore.Save(config);
+        config = _app.PublicEndpoints.SyncCurrentModeToConfigs();
         _app.McpProxy.EnsureState();
         await Task.CompletedTask;
         return PublicConfig(config);
@@ -249,6 +254,7 @@ internal sealed class AdminBridgeService
     private static object PublicConfig(ManagerConfig config) => new
     {
         config.PublicBaseUrl,
+        configuredPublicBaseUrl = config.FixedPublicBaseUrl,
         config.McpUrl,
         config.LocalHealthUrl,
         config.PublicHealthUrl,

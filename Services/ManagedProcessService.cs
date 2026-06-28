@@ -1,19 +1,26 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using DevSpaceManager.Core;
 
 namespace DevSpaceManager.Services;
 
 internal sealed class ManagedProcessService : IDisposable
 {
+    private static readonly Regex TemporaryTunnelUrlPattern = new(
+        @"https://[a-z0-9-]+\.trycloudflare\.com",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private readonly ManagerConfigStore _configStore;
     private readonly McpProxyService _proxy;
+    private readonly PublicEndpointSyncService _publicEndpoints;
     private Process? _devspace;
     private Process? _tunnel;
 
-    public ManagedProcessService(ManagerConfigStore configStore, McpProxyService proxy)
+    public ManagedProcessService(ManagerConfigStore configStore, McpProxyService proxy, PublicEndpointSyncService publicEndpoints)
     {
         _configStore = configStore;
         _proxy = proxy;
+        _publicEndpoints = publicEndpoints;
     }
 
     public bool IsRunning(ProcessRole role)
@@ -111,7 +118,7 @@ internal sealed class ManagedProcessService : IDisposable
         return StartWithLogs(start, config.DevSpaceStdoutLog, config.DevSpaceStderrLog);
     }
 
-    private static Process StartTunnel(ManagerConfig config)
+    private Process StartTunnel(ManagerConfig config)
     {
         var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
         EnsureFile(cloudflaredPath, "cloudflared");
@@ -126,9 +133,15 @@ internal sealed class ManagedProcessService : IDisposable
             temporaryStart.WorkingDirectory = AppPaths.UserProfile;
             temporaryStart.RedirectStandardOutput = true;
             temporaryStart.RedirectStandardError = true;
-            return StartWithLogs(temporaryStart, config.TunnelStdoutLog, config.TunnelStderrLog);
+            return StartWithLogs(
+                temporaryStart,
+                config.TunnelStdoutLog,
+                config.TunnelStderrLog,
+                HandleTemporaryTunnelLine,
+                HandleTemporaryTunnelLine);
         }
 
+        _publicEndpoints.SyncCurrentModeToConfigs();
         var args = "tunnel";
         if (string.Equals(config.CloudflaredProtocol, "http2", StringComparison.OrdinalIgnoreCase))
         {
@@ -149,12 +162,37 @@ internal sealed class ManagedProcessService : IDisposable
         return StartWithLogs(start, config.TunnelStdoutLog, config.TunnelStderrLog);
     }
 
-    private static Process StartWithLogs(ProcessStartInfo start, string stdoutPath, string stderrPath)
+    private void HandleTemporaryTunnelLine(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return;
+        var match = TemporaryTunnelUrlPattern.Match(line);
+        if (!match.Success) return;
+
+        if (_publicEndpoints.TryApplyTemporaryPublicBaseUrl(match.Value))
+        {
+            AppendLine(_configStore.Current.TunnelStdoutLog, $"已同步临时公网地址到 DevSpace 配置：{match.Value}");
+        }
+    }
+
+    private static Process StartWithLogs(
+        ProcessStartInfo start,
+        string stdoutPath,
+        string stderrPath,
+        Action<string?>? onOutputLine = null,
+        Action<string?>? onErrorLine = null)
     {
         Directory.CreateDirectory(AppPaths.LogDirectory);
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, e) => AppendLine(stdoutPath, e.Data);
-        process.ErrorDataReceived += (_, e) => AppendLine(stderrPath, e.Data);
+        process.OutputDataReceived += (_, e) =>
+        {
+            AppendLine(stdoutPath, e.Data);
+            onOutputLine?.Invoke(e.Data);
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            AppendLine(stderrPath, e.Data);
+            onErrorLine?.Invoke(e.Data);
+        };
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();

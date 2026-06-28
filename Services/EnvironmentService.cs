@@ -301,13 +301,16 @@ internal sealed class EnvironmentService
 
     private static string ExpectedHost(ManagerConfig config)
     {
-        if (Uri.TryCreate(config.PublicBaseUrl, UriKind.Absolute, out var uri) &&
+        var publicBaseUrl = string.IsNullOrWhiteSpace(config.FixedPublicBaseUrl)
+            ? config.PublicBaseUrl
+            : config.FixedPublicBaseUrl;
+        if (Uri.TryCreate(publicBaseUrl, UriKind.Absolute, out var uri) &&
             !string.IsNullOrWhiteSpace(uri.Host))
         {
             return uri.Host;
         }
 
-        return config.PublicBaseUrl
+        return publicBaseUrl
             .Replace("https://", "", StringComparison.OrdinalIgnoreCase)
             .Replace("http://", "", StringComparison.OrdinalIgnoreCase)
             .Trim()
@@ -580,7 +583,7 @@ internal sealed class EnvironmentService
         Directory.CreateDirectory(AppPaths.AppDataDirectory);
         Directory.CreateDirectory(AppPaths.CloudflaredDirectory);
         var path = Path.Combine(AppPaths.AppDataDirectory, "setup-cloudflare-tunnel.ps1");
-        var hostname = new Uri(config.PublicBaseUrl).Host;
+        var hostname = new Uri(string.IsNullOrWhiteSpace(config.FixedPublicBaseUrl) ? config.PublicBaseUrl : config.FixedPublicBaseUrl).Host;
         var servicePort = config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
         var credentialsGlob = Path.Combine(AppPaths.CloudflaredDirectory, "*.json");
         var content = $$"""

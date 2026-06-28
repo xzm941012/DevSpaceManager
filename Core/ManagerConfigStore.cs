@@ -114,8 +114,11 @@ internal sealed class ManagerConfigStore
             ? config.DevSpacePort
             : DerivePort(config.LocalHealthUrl, config.DevSpaceConfigPath);
         config.LocalHealthUrl = $"http://127.0.0.1:{config.DevSpacePort}/healthz";
+        config.FixedPublicBaseUrl = Blank(config.FixedPublicBaseUrl)
+            ? (Blank(config.PublicBaseUrl) ? DerivePublicBaseUrl(config.PublicHealthUrl) : config.PublicBaseUrl.TrimEnd('/'))
+            : config.FixedPublicBaseUrl.TrimEnd('/');
         config.PublicBaseUrl = Blank(config.PublicBaseUrl)
-            ? DerivePublicBaseUrl(config.PublicHealthUrl)
+            ? config.FixedPublicBaseUrl
             : config.PublicBaseUrl.TrimEnd('/');
         config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
         config.RequestProxyPort = config.RequestProxyPort is >= 1 and <= 65535

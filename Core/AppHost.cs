@@ -8,6 +8,7 @@ internal sealed class AppHost : IDisposable
     public ManagedProcessService Processes { get; }
     public McpRequestMonitor RequestMonitor { get; }
     public McpProxyService McpProxy { get; }
+    public PublicEndpointSyncService PublicEndpoints { get; }
     public HealthService Health { get; }
     public NetworkTestService NetworkTests { get; }
     public AuthSecretService AuthSecrets { get; }
@@ -21,7 +22,8 @@ internal sealed class AppHost : IDisposable
         ConfigStore = new ManagerConfigStore();
         RequestMonitor = new McpRequestMonitor();
         McpProxy = new McpProxyService(ConfigStore, RequestMonitor);
-        Processes = new ManagedProcessService(ConfigStore, McpProxy);
+        PublicEndpoints = new PublicEndpointSyncService(ConfigStore);
+        Processes = new ManagedProcessService(ConfigStore, McpProxy, PublicEndpoints);
         Health = new HealthService(ConfigStore);
         NetworkTests = new NetworkTestService(ConfigStore);
         AuthSecrets = new AuthSecretService();

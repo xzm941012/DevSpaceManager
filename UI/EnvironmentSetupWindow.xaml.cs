@@ -508,24 +508,26 @@ public sealed partial class EnvironmentSetupWindow
 
     private void EnableTemporaryTunnel()
     {
-        var config = _app.ConfigStore.Reload();
-        config.UseTemporaryCloudflareTunnel = true;
-        _app.ConfigStore.Save(config);
+        _app.PublicEndpoints.ActivateTemporaryMode();
     }
 
     private void DisableTemporaryTunnel()
     {
-        var config = _app.ConfigStore.Reload();
-        config.UseTemporaryCloudflareTunnel = false;
-        _app.ConfigStore.Save(config);
+        _app.PublicEndpoints.ActivateFixedMode();
         _ = RenderCloudflareAsync();
     }
 
     private void ToggleTemporaryTunnel()
     {
         var config = _app.ConfigStore.Reload();
-        config.UseTemporaryCloudflareTunnel = !config.UseTemporaryCloudflareTunnel;
-        _app.ConfigStore.Save(config);
+        if (config.UseTemporaryCloudflareTunnel)
+        {
+            _app.PublicEndpoints.ActivateFixedMode();
+        }
+        else
+        {
+            _app.PublicEndpoints.ActivateTemporaryMode();
+        }
     }
 
     private void SwitchToTemporaryTunnel()

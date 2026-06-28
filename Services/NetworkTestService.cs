@@ -34,7 +34,7 @@ internal sealed class NetworkTestService
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report($"正在测速第 {i}/{rounds} 轮...");
 
-            var config = _configStore.Current;
+            var config = _configStore.Reload();
             var local = await TestEndpointAsync("本地", config.LocalHealthUrl, cancellationToken);
             var pub = await TestEndpointAsync("公网", config.PublicHealthUrl, cancellationToken);
             results.Add(new SpeedTestRound(i, local, pub));
