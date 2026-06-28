@@ -156,8 +156,8 @@
                     <Border Grid.Column="0" Background="#F3F3F0" BorderBrush="#E0E0DC" BorderThickness="0,0,1,0" Padding="12">
                         <StackPanel>
                             <Button x:Name="BasicStepButton" Style="{StaticResource NavButtonStyle}" Click="BasicStepButton_OnClick" Margin="0,0,0,4" />
-                            <Button x:Name="DevSpaceStepButton" Style="{StaticResource NavButtonStyle}" Click="DevSpaceStepButton_OnClick" Margin="0,0,0,4" />
-                            <Button x:Name="CloudflareStepButton" Style="{StaticResource NavButtonStyle}" Click="CloudflareStepButton_OnClick" />
+                            <Button x:Name="CloudflareStepButton" Style="{StaticResource NavButtonStyle}" Click="CloudflareStepButton_OnClick" Margin="0,0,0,4" />
+                            <Button x:Name="DevSpaceStepButton" Style="{StaticResource NavButtonStyle}" Click="DevSpaceStepButton_OnClick" />
                         </StackPanel>
                     </Border>
 

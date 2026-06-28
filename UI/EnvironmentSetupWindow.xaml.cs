@@ -60,14 +60,14 @@ public sealed partial class EnvironmentSetupWindow
                 break;
             case SetupStep.DevSpaceInit:
                 StepTitle.Text = "DevSpace 初始化";
-                StepDescription.Text = "生成 DevSpace 配置文件并确认本地 MCP 服务可以启动。";
+                StepDescription.Text = "生成 DevSpace 配置文件。初始化时会使用前一步 Cloudflare 配置确定 MCP 公网地址。";
                 SecondaryActionButton.Content = "重新检测";
                 PrimaryActionButton.Content = "运行 devspace init";
                 await RenderDevSpaceInitAsync();
                 break;
             case SetupStep.Cloudflare:
                 StepTitle.Text = "Cloudflare 配置";
-                StepDescription.Text = "选择临时地址或固定域名地址。临时地址无需登录 Cloudflare；固定域名地址需要登录并配置 tunnel，且应在 DevSpace 初始化后进行。";
+                StepDescription.Text = "先选择临时地址或固定域名地址。临时地址无需登录 Cloudflare；固定域名地址需要登录并配置 tunnel。";
                 await RenderCloudflareAsync();
                 break;
         }
@@ -117,8 +117,8 @@ public sealed partial class EnvironmentSetupWindow
         try
         {
             await RunStepCheckAsync(SetupStep.Basic);
-            await RunStepCheckAsync(SetupStep.DevSpaceInit);
             await RunStepCheckAsync(SetupStep.Cloudflare);
+            await RunStepCheckAsync(SetupStep.DevSpaceInit);
 
             var allPassed = _basicPassed && _devSpacePassed && _cloudflarePassed;
             FooterStatus.Text = allPassed ? "全部环境检查通过。" : "环境检查完成，存在需要处理的项目。";
@@ -173,13 +173,6 @@ public sealed partial class EnvironmentSetupWindow
 
     private async Task CheckCloudflareInBackgroundAsync()
     {
-        if (!_devSpacePassed)
-        {
-            _cloudflarePassed = false;
-            await Task.CompletedTask;
-            return;
-        }
-
         var config = _app.ConfigStore.Reload();
         if (config.UseTemporaryCloudflareTunnel)
         {
@@ -206,22 +199,6 @@ public sealed partial class EnvironmentSetupWindow
     {
         ResultPanel.Children.Clear();
         var config = _app.ConfigStore.Reload();
-        var devSpaceConfigExists = File.Exists(config.DevSpaceConfigPath);
-        if (!devSpaceConfigExists)
-        {
-            _devSpacePassed = false;
-            _cloudflarePassed = false;
-            SecondaryActionButton.Content = "重新检测";
-            PrimaryActionButton.Content = "运行 devspace init";
-            ResultPanel.Children.Add(ResultRow("DevSpace 初始化", $"缺失：{config.DevSpaceConfigPath}", CheckVisualState.Fail, _app.Environment.RunDevSpaceInit));
-            ResultPanel.Children.Add(ResultRow("Cloudflare 配置", "请先完成 DevSpace 初始化，再配置临时地址或固定域名地址。", CheckVisualState.Fail, null));
-            FooterStatus.Text = "Cloudflare 配置依赖 DevSpace 初始化。";
-            RenderStepButtons();
-            await Task.CompletedTask;
-            return;
-        }
-
-        _devSpacePassed = true;
         if (config.UseTemporaryCloudflareTunnel)
         {
             _cloudflarePassed = true;
@@ -414,12 +391,7 @@ public sealed partial class EnvironmentSetupWindow
                 break;
             case SetupStep.Cloudflare:
                 var config = _app.ConfigStore.Reload();
-                if (!File.Exists(config.DevSpaceConfigPath))
-                {
-                    _app.Environment.RunDevSpaceInit();
-                    FooterStatus.Text = "已打开 devspace init 窗口，完成后再配置 Cloudflare。";
-                }
-                else if (config.UseTemporaryCloudflareTunnel)
+                if (config.UseTemporaryCloudflareTunnel)
                 {
                     await RenderCloudflareAsync();
                 }
@@ -576,8 +548,8 @@ public sealed partial class EnvironmentSetupWindow
         return step switch
         {
             SetupStep.Basic => true,
-            SetupStep.DevSpaceInit => _basicPassed,
-            SetupStep.Cloudflare => _basicPassed && _devSpacePassed,
+            SetupStep.Cloudflare => _basicPassed,
+            SetupStep.DevSpaceInit => _basicPassed && _cloudflarePassed,
             _ => false
         };
     }
@@ -585,8 +557,8 @@ public sealed partial class EnvironmentSetupWindow
     private void RenderStepButtons()
     {
         ConfigureStepButton(BasicStepButton, SetupStep.Basic, "1  基础环境", _basicPassed);
-        ConfigureStepButton(DevSpaceStepButton, SetupStep.DevSpaceInit, "2  DevSpace 初始化", _devSpacePassed);
-        ConfigureStepButton(CloudflareStepButton, SetupStep.Cloudflare, "3  Cloudflare 配置", _cloudflarePassed);
+        ConfigureStepButton(CloudflareStepButton, SetupStep.Cloudflare, "2  Cloudflare 配置", _cloudflarePassed);
+        ConfigureStepButton(DevSpaceStepButton, SetupStep.DevSpaceInit, "3  DevSpace 初始化", _devSpacePassed);
     }
 
     private void ConfigureStepButton(WpfButton button, SetupStep step, string label, bool passed)

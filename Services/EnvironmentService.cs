@@ -48,10 +48,6 @@ internal sealed class EnvironmentService
     {
         var config = _configStore.Reload();
         var checks = new List<EnvironmentCheck>();
-        checks.Add(File.Exists(config.DevSpaceConfigPath)
-            ? new EnvironmentCheck("DevSpace 初始化", true, config.DevSpaceConfigPath)
-            : new EnvironmentCheck("DevSpace 初始化", false, $"缺失：{config.DevSpaceConfigPath}"));
-
         if (config.UseTemporaryCloudflareTunnel)
         {
             checks.Add(new EnvironmentCheck("Cloudflare 登录", true, "已选择临时 tunnel 模式，不需要登录。"));
@@ -64,6 +60,10 @@ internal sealed class EnvironmentService
             checks.Add(await CloudflareTunnelNameCheck(config, cloudflaredPath));
             checks.AddRange(CloudflareConfigChecks(config));
         }
+
+        checks.Add(File.Exists(config.DevSpaceConfigPath)
+            ? new EnvironmentCheck("DevSpace 初始化", true, config.DevSpaceConfigPath)
+            : new EnvironmentCheck("DevSpace 初始化", false, $"缺失：{config.DevSpaceConfigPath}"));
         return await Task.FromResult(checks);
     }
 
