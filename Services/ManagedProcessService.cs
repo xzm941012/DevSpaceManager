@@ -13,14 +13,21 @@ internal sealed class ManagedProcessService : IDisposable
     private readonly ManagerConfigStore _configStore;
     private readonly McpProxyService _proxy;
     private readonly PublicEndpointSyncService _publicEndpoints;
+    private readonly HealthService _health;
+    private readonly SemaphoreSlim _processGate = new(1, 1);
     private Process? _devspace;
     private Process? _tunnel;
 
-    public ManagedProcessService(ManagerConfigStore configStore, McpProxyService proxy, PublicEndpointSyncService publicEndpoints)
+    public ManagedProcessService(
+        ManagerConfigStore configStore,
+        McpProxyService proxy,
+        PublicEndpointSyncService publicEndpoints,
+        HealthService health)
     {
         _configStore = configStore;
         _proxy = proxy;
         _publicEndpoints = publicEndpoints;
+        _health = health;
     }
 
     public bool IsRunning(ProcessRole role)
@@ -31,39 +38,55 @@ internal sealed class ManagedProcessService : IDisposable
 
     public void Start(ProcessRole role)
     {
-        var config = _configStore.Reload();
-        if (role == ProcessRole.CloudflareTunnel)
+        _processGate.Wait();
+        try
         {
-            _proxy.EnsureState();
+            var config = _configStore.Reload();
+            if (role == ProcessRole.CloudflareTunnel)
+            {
+                _proxy.EnsureState();
+            }
+
+            if (IsRunning(role)) return;
+
+            if (role == ProcessRole.DevSpace)
+            {
+                _devspace = StartDevSpace(config);
+                return;
+            }
+
+            _tunnel = StartTunnel(config);
         }
-
-        if (IsRunning(role)) return;
-
-        if (role == ProcessRole.DevSpace)
+        finally
         {
-            _devspace = StartDevSpace(config);
-            return;
+            _processGate.Release();
         }
-
-        _tunnel = StartTunnel(config);
     }
 
     public void Stop(ProcessRole role)
     {
-        var process = role == ProcessRole.DevSpace ? _devspace : _tunnel;
-        if (process is { HasExited: false })
+        _processGate.Wait();
+        try
         {
-            KillProcessTree(process);
-        }
+            var process = role == ProcessRole.DevSpace ? _devspace : _tunnel;
+            if (process is { HasExited: false })
+            {
+                KillProcessTree(process);
+            }
 
-        foreach (var existing in EnumerateExisting(role))
-        {
-            KillProcessTree(existing);
-        }
+            foreach (var existing in EnumerateExisting(role))
+            {
+                KillProcessTree(existing);
+            }
 
-        if (role == ProcessRole.CloudflareTunnel)
+            if (role == ProcessRole.CloudflareTunnel)
+            {
+                _proxy.Stop();
+            }
+        }
+        finally
         {
-            _proxy.Stop();
+            _processGate.Release();
         }
     }
 
@@ -73,10 +96,32 @@ internal sealed class ManagedProcessService : IDisposable
         Start(role);
     }
 
+    public async Task StartAsync(ProcessRole role, CancellationToken cancellationToken = default)
+    {
+        if (role == ProcessRole.CloudflareTunnel)
+        {
+            await StartTunnelWhenDevSpaceReadyAsync(cancellationToken);
+            return;
+        }
+
+        Start(role);
+    }
+
+    public async Task RestartAsync(ProcessRole role, CancellationToken cancellationToken = default)
+    {
+        if (role == ProcessRole.CloudflareTunnel)
+        {
+            Stop(ProcessRole.CloudflareTunnel);
+            await StartTunnelWhenDevSpaceReadyAsync(cancellationToken);
+            return;
+        }
+
+        Restart(role);
+    }
+
     public void StartAll()
     {
-        if (_configStore.Current.AutoStartDevSpace) Start(ProcessRole.DevSpace);
-        if (_configStore.Current.AutoStartTunnel) Start(ProcessRole.CloudflareTunnel);
+        StartAllAsync().GetAwaiter().GetResult();
     }
 
     public void StopAll()
@@ -88,8 +133,57 @@ internal sealed class ManagedProcessService : IDisposable
 
     public void RestartAll()
     {
+        RestartAllAsync().GetAwaiter().GetResult();
+    }
+
+    public async Task StartAllAsync(CancellationToken cancellationToken = default)
+    {
+        if (_configStore.Current.AutoStartDevSpace)
+        {
+            Start(ProcessRole.DevSpace);
+        }
+
+        if (_configStore.Current.AutoStartTunnel)
+        {
+            await StartTunnelWhenDevSpaceReadyAsync(cancellationToken);
+        }
+    }
+
+    public async Task RestartAllAsync(CancellationToken cancellationToken = default)
+    {
         StopAll();
-        StartAll();
+        await StartAllAsync(cancellationToken);
+    }
+
+    private async Task StartTunnelWhenDevSpaceReadyAsync(CancellationToken cancellationToken)
+    {
+        _proxy.EnsureState();
+        Start(ProcessRole.DevSpace);
+        var local = await WaitForLocalHealthAsync(cancellationToken);
+        if (!local.Ok)
+        {
+            throw new InvalidOperationException($"DevSpace 未启动，Cloudflare Tunnel 未启动：{local.Message}");
+        }
+
+        Start(ProcessRole.CloudflareTunnel);
+    }
+
+    private async Task<(bool Ok, string Message)> WaitForLocalHealthAsync(CancellationToken cancellationToken)
+    {
+        (bool Ok, string Message) last = (false, "尚未检测。");
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            last = await _health.CheckLocalAsync(cancellationToken);
+            if (last.Ok)
+            {
+                return last;
+            }
+
+            await Task.Delay(attempt == 1 ? 700 : 1200, cancellationToken);
+        }
+
+        return last;
     }
 
     private static Process StartDevSpace(ManagerConfig config)
@@ -124,8 +218,22 @@ internal sealed class ManagedProcessService : IDisposable
         EnsureFile(cloudflaredPath, "cloudflared");
         if (config.UseTemporaryCloudflareTunnel)
         {
+            _publicEndpoints.MarkTemporaryPublicBaseUrlPending();
+            config = _configStore.Reload();
             var temporaryPort = config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
-            var temporaryArgs = $"tunnel --url http://localhost:{temporaryPort}";
+            var temporaryArgs = "tunnel";
+            var protocol = string.IsNullOrWhiteSpace(config.CloudflaredProtocol)
+                ? "auto"
+                : config.CloudflaredProtocol.Trim().ToLowerInvariant();
+            if (protocol is "auto" or "http2")
+            {
+                temporaryArgs += " --protocol http2";
+            }
+            else if (protocol == "quic")
+            {
+                temporaryArgs += " --protocol quic";
+            }
+            temporaryArgs += $" --url http://127.0.0.1:{temporaryPort}";
             AppendLine(config.TunnelStdoutLog, $"临时 tunnel 模式已启用。公网地址会由 cloudflared 输出，通常是 https://*.trycloudflare.com；每次启动都会变化。");
             var temporaryStart = CommandProcess.Create(cloudflaredPath, temporaryArgs);
             temporaryStart.UseShellExecute = false;
@@ -171,6 +279,17 @@ internal sealed class ManagedProcessService : IDisposable
         if (_publicEndpoints.TryApplyTemporaryPublicBaseUrl(match.Value))
         {
             AppendLine(_configStore.Current.TunnelStdoutLog, $"已同步临时公网地址到 DevSpace 配置：{match.Value}");
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    Restart(ProcessRole.DevSpace);
+                }
+                catch (Exception ex)
+                {
+                    Log.Worker($"Restart DevSpace after temporary tunnel URL sync failed: {ex.Message}");
+                }
+            });
         }
     }
 
@@ -199,8 +318,9 @@ internal sealed class ManagedProcessService : IDisposable
         return process;
     }
 
-    private static IEnumerable<Process> EnumerateExisting(ProcessRole role)
+    private IEnumerable<Process> EnumerateExisting(ProcessRole role)
     {
+        var config = _configStore.Current;
         var names = role == ProcessRole.DevSpace
             ? new[] { "node", "bash", "sh" }
             : new[] { "cloudflared" };
@@ -209,14 +329,14 @@ internal sealed class ManagedProcessService : IDisposable
         {
             foreach (var process in Process.GetProcessesByName(name))
             {
-                if (MatchesRole(process, role)) yield return process;
+                if (MatchesRole(process, role, config)) yield return process;
             }
         }
     }
 
-    private static Process? FindExisting(ProcessRole role) => EnumerateExisting(role).FirstOrDefault();
+    private Process? FindExisting(ProcessRole role) => EnumerateExisting(role).FirstOrDefault();
 
-    private static bool MatchesRole(Process process, ProcessRole role)
+    private static bool MatchesRole(Process process, ProcessRole role, ManagerConfig config)
     {
         try
         {
@@ -227,9 +347,21 @@ internal sealed class ManagedProcessService : IDisposable
                        commandLine.Contains("@waishnav/devspace", StringComparison.OrdinalIgnoreCase);
             }
 
-            return commandLine.Contains("cloudflared", StringComparison.OrdinalIgnoreCase) &&
-                   commandLine.Contains("tunnel", StringComparison.OrdinalIgnoreCase) &&
-                   commandLine.Contains("devspace", StringComparison.OrdinalIgnoreCase);
+            if (!commandLine.Contains("cloudflared", StringComparison.OrdinalIgnoreCase) ||
+                !commandLine.Contains("tunnel", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (config.UseTemporaryCloudflareTunnel)
+            {
+                var temporaryPort = PublicEndpointSyncService.CloudflaredServicePort(config);
+                return commandLine.Contains($"--url http://localhost:{temporaryPort}", StringComparison.OrdinalIgnoreCase) ||
+                       commandLine.Contains($"--url http://127.0.0.1:{temporaryPort}", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return commandLine.Contains("run", StringComparison.OrdinalIgnoreCase) &&
+                   commandLine.Contains(config.CloudflareTunnelName, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
@@ -273,6 +405,7 @@ internal sealed class ManagedProcessService : IDisposable
     {
         _devspace?.Dispose();
         _tunnel?.Dispose();
+        _processGate.Dispose();
         _proxy.Stop();
     }
 }

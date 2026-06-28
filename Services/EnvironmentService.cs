@@ -62,8 +62,8 @@ internal sealed class EnvironmentService
         }
 
         checks.Add(File.Exists(config.DevSpaceConfigPath)
-            ? new EnvironmentCheck("DevSpace 初始化", true, config.DevSpaceConfigPath)
-            : new EnvironmentCheck("DevSpace 初始化", false, $"缺失：{config.DevSpaceConfigPath}"));
+            ? new EnvironmentCheck("DevSpace 配置", true, config.DevSpaceConfigPath)
+            : new EnvironmentCheck("DevSpace 配置", false, $"缺失：{config.DevSpaceConfigPath}"));
         return await Task.FromResult(checks);
     }
 
@@ -127,18 +127,78 @@ internal sealed class EnvironmentService
     public void InstallDevSpace()
     {
         var config = _configStore.Reload();
-        var command = $"{CommandProcess.Quote(CommandProcess.ToBashPath(config.NpmCommand))} install -g @waishnav/devspace";
+        var nvmCommand = FindNvmCommand();
+        var useNodeCommand = File.Exists(nvmCommand)
+            ? $"{CommandProcess.Quote(CommandProcess.ToBashPath(nvmCommand))} use {config.NodeVersion}"
+            : "";
+        var npmInstallCommand = $"{CommandProcess.Quote(CommandProcess.ToBashPath(config.NpmCommand))} install -g @waishnav/devspace";
+        var command = string.IsNullOrWhiteSpace(useNodeCommand)
+            ? npmInstallCommand
+            : $"{useNodeCommand} && {npmInstallCommand}";
         OpenBashCommand("安装或更新 DevSpace", config.GitBashPath, command);
+    }
+
+    public void RepairDevSpaceNativeDependencies()
+    {
+        var config = _configStore.Reload();
+        var nvmCommand = FindNvmCommand();
+        var nodeDirectory = config.NodeDirectory;
+        var npm = Path.Combine(nodeDirectory, "npm.cmd");
+        if (!File.Exists(npm))
+        {
+            npm = config.NpmCommand;
+        }
+
+        var packageDirectory = Path.Combine(nodeDirectory, "node_modules", "@waishnav", "devspace");
+        var script = $$"""
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+        chcp 65001 | Out-Null
+        $ErrorActionPreference = "Continue"
+        $Host.UI.RawUI.WindowTitle = "修复 DevSpace Node {{config.NodeVersion}} 依赖"
+        Write-Host "修复 DevSpace Node {{config.NodeVersion}} 依赖" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Node 目录: {{nodeDirectory}}"
+        & {{QuotePs(Path.Combine(nodeDirectory, "node.exe"))}} -p "process.version + ' / NODE_MODULE_VERSION=' + process.versions.modules"
+        Write-Host ""
+        {{(File.Exists(nvmCommand) ? $"Write-Host \"切换当前 nvm 版本...\"{Environment.NewLine}& {QuotePs(nvmCommand)} use {config.NodeVersion}{Environment.NewLine}Write-Host \"\"" : "")}}
+        Write-Host "停止残留 DevSpace 进程..."
+        Get-CimInstance Win32_Process |
+          Where-Object {
+            $name = $_.Name
+            $cmd = $_.CommandLine
+            ($name -in @('node.exe', 'bash.exe', 'sh.exe')) -and
+            ($cmd -match '@waishnav\\devspace|@waishnav/devspace|[\\/]devspace(\s|$)')
+          } |
+          ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+          }
+        Write-Host "卸载旧包..."
+        & {{QuotePs(npm)}} uninstall -g @waishnav/devspace
+        Write-Host "清理残留文件..."
+        Remove-Item -LiteralPath {{QuotePs(packageDirectory)}} -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath {{QuotePs(Path.Combine(nodeDirectory, "devspace"))}} -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath {{QuotePs(Path.Combine(nodeDirectory, "devspace.cmd"))}} -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath {{QuotePs(Path.Combine(nodeDirectory, "devspace.ps1"))}} -Force -ErrorAction SilentlyContinue
+        Write-Host "重新安装 DevSpace..."
+        & {{QuotePs(npm)}} install -g --force @waishnav/devspace
+        Write-Host ""
+        Write-Host "验证安装..."
+        & {{QuotePs(npm)}} list -g @waishnav/devspace better-sqlite3 --depth=2
+        Write-Host ""
+        Read-Host "按 Enter 关闭"
+        """;
+        OpenScript($"修复 DevSpace Node {config.NodeVersion} 依赖", script);
     }
 
     public void InstallCloudflared() =>
         OpenPowerShellCommand("安装 cloudflared", "winget install --id Cloudflare.cloudflared -e --accept-package-agreements --accept-source-agreements");
 
-    public void RunDevSpaceInit()
+    public Process? RunDevSpaceInit()
     {
         var config = _configStore.Reload();
         var command = $"{CommandProcess.Quote(CommandProcess.ToBashPath(config.DevSpaceCommand))} init";
-        OpenBashCommand("运行 devspace init", config.GitBashPath, command);
+        return OpenBashCommand("运行 devspace init", config.GitBashPath, command);
     }
 
     public void RunCloudflaredLogin()
@@ -148,13 +208,13 @@ internal sealed class EnvironmentService
         OpenPowerShellCommand("Cloudflare Tunnel 授权登录", $"& {QuotePs(cloudflaredPath)} tunnel login");
     }
 
-    public void SetupCloudflareTunnel()
+    public Process? SetupCloudflareTunnel()
     {
         var scriptPath = WriteCloudflareSetupScript();
-        Process.Start(new ProcessStartInfo
+        return Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoExit -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            Arguments = $"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
             UseShellExecute = true
         });
     }
@@ -195,7 +255,7 @@ internal sealed class EnvironmentService
 
         try
         {
-            var output = await RunCaptureAsync(cloudflaredPath, $"tunnel list -o json --name {QuoteArg(tunnelName)}");
+            var output = ExtractJsonArray(await RunCaptureAsync(cloudflaredPath, $"tunnel list -o json --name {QuoteArg(tunnelName)}"));
             if (string.IsNullOrWhiteSpace(output))
             {
                 return new EnvironmentCheck("Cloudflare 隧道名称", true, $"{tunnelName}（未发现远端同名，一键配置会创建）");
@@ -229,13 +289,24 @@ internal sealed class EnvironmentService
         }
     }
 
+    private static string ExtractJsonArray(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return "";
+
+        var start = output.IndexOf('[');
+        var end = output.LastIndexOf(']');
+        if (start < 0 || end < start) return "";
+
+        return output[start..(end + 1)];
+    }
+
     private static IReadOnlyList<EnvironmentCheck> CloudflareConfigChecks(ManagerConfig config)
     {
         if (!File.Exists(config.CloudflaredConfigPath))
         {
             return
             [
-                new EnvironmentCheck("Cloudflare Tunnel ID", false, "cloudflared 配置不存在，请点击“一键配置 Cloudflare”"),
+                new EnvironmentCheck("Cloudflare Tunnel ID", false, "cloudflared 配置不存在，请点击“保存”补全配置。"),
                 new EnvironmentCheck("Cloudflare 凭据路径", false, "cloudflared 配置不存在"),
                 new EnvironmentCheck("Cloudflare 凭据文件", false, "cloudflared 配置不存在"),
                 new EnvironmentCheck("Cloudflare 域名绑定", false, "cloudflared 配置不存在"),
@@ -251,7 +322,7 @@ internal sealed class EnvironmentService
             var hostnames = ReadYamlValues(lines, "hostname");
             var services = ReadYamlValues(lines, "service");
             var expectedHost = ExpectedHost(config);
-            var expectedPort = config.DevSpacePort.ToString();
+            var expectedPort = PublicEndpointSyncService.CloudflaredServicePort(config).ToString();
             var expectedServices = new[]
             {
                 $"http://localhost:{expectedPort}",
@@ -261,7 +332,7 @@ internal sealed class EnvironmentService
             var checks = new List<EnvironmentCheck>
             {
                 string.IsNullOrWhiteSpace(tunnelId)
-                    ? new EnvironmentCheck("Cloudflare Tunnel ID", false, "config.yml 缺少 tunnel:，请点击“一键配置 Cloudflare”")
+                    ? new EnvironmentCheck("Cloudflare Tunnel ID", false, "config.yml 缺少 tunnel:，请点击“保存”补全配置。")
                     : new EnvironmentCheck("Cloudflare Tunnel ID", true, tunnelId),
 
                 string.IsNullOrWhiteSpace(credentialsFile)
@@ -473,7 +544,7 @@ internal sealed class EnvironmentService
         OpenScript(title, script);
     }
 
-    private static void OpenBashCommand(string title, string bashPath, string command)
+    private static Process? OpenBashCommand(string title, string bashPath, string command)
     {
         var script = $$"""
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -487,16 +558,16 @@ internal sealed class EnvironmentService
         Write-Host ""
         Read-Host "按 Enter 关闭"
         """;
-        OpenScript(title, script);
+        return OpenScript(title, script);
     }
 
-    private static void OpenScript(string title, string script)
+    private static Process? OpenScript(string title, string script)
     {
         Directory.CreateDirectory(AppPaths.AppDataDirectory);
         var safeName = string.Concat(title.Select(ch => char.IsLetterOrDigit(ch) ? ch : '-'));
         var path = Path.Combine(AppPaths.AppDataDirectory, $"{safeName}.ps1");
         File.WriteAllText(path, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-        Process.Start(new ProcessStartInfo
+        return Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
             Arguments = $"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{path}\"",
@@ -638,13 +709,25 @@ internal sealed class EnvironmentService
           return $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
         }
 
+        function Select-JsonArray($text) {
+          if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+          $start = $text.IndexOf('[')
+          $end = $text.LastIndexOf(']')
+          if ($start -lt 0 -or $end -lt $start) { return $null }
+          return $text.Substring($start, $end - $start + 1)
+        }
+
         function Get-TunnelInfo {
-          $json = & $cloudflared tunnel list -o json --name $tunnelName 2>$null
+          $raw = & $cloudflared tunnel list -o json --name $tunnelName 2>$null
+          $json = Select-JsonArray ($raw -join [Environment]::NewLine)
           if ([string]::IsNullOrWhiteSpace($json)) { return $null }
           try {
             $items = $json | ConvertFrom-Json
-            if ($items -is [array]) { return $items | Select-Object -First 1 }
-            return $items
+            if ($items -is [array]) {
+              $item = $items | Select-Object -First 1
+              if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace($item.id)) { return $item }
+            }
+            return $null
           } catch {
             return $null
           }

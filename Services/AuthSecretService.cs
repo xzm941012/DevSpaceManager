@@ -1,10 +1,28 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using DevSpaceManager.Core;
 
 namespace DevSpaceManager.Services;
 
 internal sealed class AuthSecretService
 {
+    public string EnsureOwnerPassword()
+    {
+        var existing = ReadOwnerPassword();
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            return existing;
+        }
+
+        var ownerToken = GenerateOwnerToken();
+        Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.DevSpaceAuthPath)!);
+        var json = JsonSerializer.Serialize(
+            new Dictionary<string, string> { ["ownerToken"] = ownerToken },
+            new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(AppPaths.DevSpaceAuthPath, json);
+        return ownerToken;
+    }
+
     public string ReadOwnerPassword()
     {
         if (!File.Exists(AppPaths.DevSpaceAuthPath)) return "";
@@ -51,5 +69,12 @@ internal sealed class AuthSecretService
         }
 
         return null;
+    }
+
+    private static string GenerateOwnerToken()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        RandomNumberGenerator.Fill(bytes);
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 }

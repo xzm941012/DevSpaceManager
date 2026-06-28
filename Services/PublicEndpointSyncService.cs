@@ -37,6 +37,7 @@ internal sealed class PublicEndpointSyncService
         {
             var config = _configStore.Reload();
             config.UseTemporaryCloudflareTunnel = true;
+            config.TemporaryPublicBaseUrlPending = true;
             _configStore.Save(config);
             return config;
         }
@@ -48,6 +49,7 @@ internal sealed class PublicEndpointSyncService
         {
             var config = _configStore.Reload();
             config.UseTemporaryCloudflareTunnel = false;
+            config.TemporaryPublicBaseUrlPending = false;
             ApplyCurrentPublicBaseUrl(config, ResolveFixedPublicBaseUrl(config));
             _configStore.Save(config);
             SyncConnectionFiles(config, includeCloudflareIngress: true);
@@ -68,9 +70,25 @@ internal sealed class PublicEndpointSyncService
 
             var changed = !string.Equals(config.PublicBaseUrl, normalized, StringComparison.OrdinalIgnoreCase);
             ApplyCurrentPublicBaseUrl(config, normalized);
+            config.TemporaryPublicBaseUrlPending = false;
             _configStore.Save(config);
             SyncConnectionFiles(config, includeCloudflareIngress: false);
             return changed;
+        }
+    }
+
+    public void MarkTemporaryPublicBaseUrlPending()
+    {
+        lock (_gate)
+        {
+            var config = _configStore.Reload();
+            if (!config.UseTemporaryCloudflareTunnel)
+            {
+                return;
+            }
+
+            config.TemporaryPublicBaseUrlPending = true;
+            _configStore.Save(config);
         }
     }
 
@@ -81,6 +99,7 @@ internal sealed class PublicEndpointSyncService
             var config = _configStore.Reload();
             if (!config.UseTemporaryCloudflareTunnel)
             {
+                config.TemporaryPublicBaseUrlPending = false;
                 ApplyCurrentPublicBaseUrl(config, ResolveFixedPublicBaseUrl(config));
                 _configStore.Save(config);
                 SyncConnectionFiles(config, includeCloudflareIngress: true);
@@ -92,11 +111,77 @@ internal sealed class PublicEndpointSyncService
         }
     }
 
+    public ManagerConfig ApplyDevSpaceConfiguration(int port, IEnumerable<string> allowedRoots)
+    {
+        if (port is < 1 or > 65535)
+        {
+            throw new InvalidOperationException("DevSpace 端口必须在 1 到 65535 之间。");
+        }
+
+        var normalizedRoots = NormalizeAllowedRoots(allowedRoots);
+
+        lock (_gate)
+        {
+            var config = _configStore.Reload();
+            config.DevSpacePort = port;
+            config.LocalHealthUrl = $"http://127.0.0.1:{port}/healthz";
+            _configStore.Save(config);
+            SyncConnectionFiles(config, includeCloudflareIngress: !config.UseTemporaryCloudflareTunnel, normalizedRoots);
+            return config;
+        }
+    }
+
+    public ManagerConfig ApplyCloudflareConfiguration(
+        bool useTemporaryTunnel,
+        string fixedPublicBaseUrl,
+        string tunnelName,
+        string protocol,
+        int port)
+    {
+        if (port is < 1 or > 65535)
+        {
+            throw new InvalidOperationException("本地代理端口必须在 1 到 65535 之间。");
+        }
+
+        var normalizedProtocol = string.IsNullOrWhiteSpace(protocol) ? "auto" : protocol.Trim().ToLowerInvariant();
+        if (normalizedProtocol is not ("auto" or "http2" or "quic"))
+        {
+            throw new InvalidOperationException("Cloudflare 协议只能选择 auto、http2 或 quic。");
+        }
+
+        lock (_gate)
+        {
+            var config = _configStore.Reload();
+            config.UseTemporaryCloudflareTunnel = useTemporaryTunnel;
+            config.DevSpacePort = port;
+            config.LocalHealthUrl = $"http://127.0.0.1:{port}/healthz";
+            config.CloudflaredProtocol = normalizedProtocol;
+            config.TemporaryPublicBaseUrlPending = useTemporaryTunnel;
+
+            if (!useTemporaryTunnel)
+            {
+                if (string.IsNullOrWhiteSpace(tunnelName))
+                {
+                    throw new InvalidOperationException("固定域名模式需要填写 Cloudflare 隧道名称。");
+                }
+
+                config.CloudflareTunnelName = tunnelName.Trim().ToLowerInvariant();
+                config.FixedPublicBaseUrl = NormalizeBaseUrl(fixedPublicBaseUrl);
+                ApplyCurrentPublicBaseUrl(config, config.FixedPublicBaseUrl);
+            }
+
+            _configStore.Save(config);
+            SyncConnectionFiles(config, includeCloudflareIngress: !config.UseTemporaryCloudflareTunnel);
+            return config;
+        }
+    }
+
     public static int CloudflaredServicePort(ManagerConfig config) =>
         config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
 
     public static void WriteCloudflaredIngress(string path, string hostname, int port)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : [];
         if (lines.Count == 0)
         {
@@ -138,21 +223,55 @@ internal sealed class PublicEndpointSyncService
         File.WriteAllLines(path, lines);
     }
 
-    public static void WriteDevSpaceConnection(string path, string publicBaseUrl, int port)
+    public static IReadOnlyList<string> ReadAllowedRoots(string path)
+    {
+        if (!File.Exists(path)) return Array.Empty<string>();
+
+        try
+        {
+            using var json = JsonDocument.Parse(File.ReadAllText(path));
+            if (!json.RootElement.TryGetProperty("allowedRoots", out var roots) || roots.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return roots.EnumerateArray()
+                .Select(item => item.GetString())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    public static void WriteDevSpaceConnection(string path, string publicBaseUrl, int port, IEnumerable<string>? allowedRoots = null)
     {
         var root = ReadJsonObjectOrEmpty(path);
         root["publicBaseUrl"] = publicBaseUrl.TrimEnd('/');
         root["port"] = port;
-        root.TryAdd("host", "127.0.0.1");
-        root.TryAdd("allowedRoots", Array.Empty<string>());
+        root["host"] = string.IsNullOrWhiteSpace(root.TryGetValue("host", out var host) ? host?.ToString() : null)
+            ? "127.0.0.1"
+            : host;
+        if (allowedRoots is null)
+        {
+            root.TryAdd("allowedRoots", Array.Empty<string>());
+        }
+        else
+        {
+            root["allowedRoots"] = NormalizeAllowedRoots(allowedRoots);
+        }
         WriteTextFile(path, JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true }));
     }
 
-    private void SyncConnectionFiles(ManagerConfig config, bool includeCloudflareIngress)
+    private void SyncConnectionFiles(ManagerConfig config, bool includeCloudflareIngress, IReadOnlyList<string>? allowedRoots = null)
     {
         if (!string.IsNullOrWhiteSpace(config.PublicBaseUrl))
         {
-            WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort);
+            WriteDevSpaceConnection(config.DevSpaceConfigPath, config.PublicBaseUrl, config.DevSpacePort, allowedRoots);
         }
 
         if (!includeCloudflareIngress) return;
@@ -165,6 +284,26 @@ internal sealed class PublicEndpointSyncService
     {
         config.PublicBaseUrl = publicBaseUrl.TrimEnd('/');
         config.PublicHealthUrl = $"{config.PublicBaseUrl}/healthz";
+    }
+
+    private static string[] NormalizeAllowedRoots(IEnumerable<string> allowedRoots)
+    {
+        return allowedRoots
+            .Select(root => root?.Trim())
+            .Where(root => !string.IsNullOrWhiteSpace(root))
+            .Select(root =>
+            {
+                try
+                {
+                    return Path.GetFullPath(root!);
+                }
+                catch
+                {
+                    return root!;
+                }
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static Dictionary<string, object?> ReadJsonObjectOrEmpty(string path)

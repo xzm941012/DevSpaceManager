@@ -45,7 +45,7 @@ internal sealed class WorkerService
                     !_processes.IsRunning(ProcessRole.CloudflareTunnel) &&
                     (config.AutoRestart || !_tunnelStarted))
                 {
-                    _processes.Start(ProcessRole.CloudflareTunnel);
+                    await _processes.StartAsync(ProcessRole.CloudflareTunnel, cancellationToken);
                     _tunnelStarted = true;
                 }
 
@@ -60,8 +60,20 @@ internal sealed class WorkerService
                     }
                 }
 
-                await _health.CheckLocalAsync(cancellationToken);
-                await _health.CheckPublicAsync(cancellationToken);
+                var local = await _health.CheckLocalAsync(cancellationToken);
+                var pub = await _health.CheckPublicAsync(cancellationToken);
+                config = _configStore.Reload();
+                if (config.AutoStartTunnel &&
+                    config.AutoRestart &&
+                    !config.UseTemporaryCloudflareTunnel &&
+                    local.Ok &&
+                    !pub.Ok &&
+                    !config.TemporaryPublicBaseUrlPending)
+                {
+                    Log.Worker($"Public health check failed while local DevSpace is healthy. Restarting Cloudflare Tunnel: {pub.Message}");
+                    await _processes.RestartAsync(ProcessRole.CloudflareTunnel, cancellationToken);
+                    _tunnelStarted = true;
+                }
             }
             catch (Exception ex)
             {

@@ -2,15 +2,23 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  ArrowLeft,
   Bug,
   CheckCircle2,
+  Eye,
+  EyeOff,
+  RotateCw,
+  Info,
   Globe2,
   HardDrive,
   Loader2,
   Network,
+  Pencil,
+  Plus,
   RefreshCw,
   Settings,
   TerminalSquare,
+  Trash2,
 } from "lucide-react";
 import "./styles.css";
 
@@ -25,6 +33,7 @@ type PublicProfile = {
   id: string;
   name: string;
   userDataFolder: string;
+  proxyServer: string;
   proxyConfigured: boolean;
   language: string;
   temporary: boolean;
@@ -52,11 +61,17 @@ type PublicConfig = {
 type Snapshot = {
   checkedAt: string;
   config: PublicConfig;
+  ownerPassword: string;
   services: {
     devspace: { running: boolean; healthOk: boolean; message: string };
     tunnel: { running: boolean; healthOk: boolean; message: string };
   };
   logs: Record<string, string>;
+};
+
+type ProfileList = {
+  activeProfileId: string;
+  profiles: PublicProfile[];
 };
 
 type SectionKey = "overview" | "browser" | "proxy" | "debug" | "logs";
@@ -99,6 +114,7 @@ function App() {
   const [toast, setToast] = React.useState("");
   const [debugEnabled, setDebugEnabled] = React.useState(false);
   const [debugPort, setDebugPort] = React.useState("9223");
+  const [proxyEnabled, setProxyEnabled] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -108,6 +124,7 @@ function App() {
       setSnapshot(next);
       setDebugEnabled(next.config.localDebugEnabled);
       setDebugPort(String(next.config.localDebugPort));
+      setProxyEnabled(next.config.requestProxyEnabled);
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新失败");
     } finally {
@@ -129,6 +146,101 @@ function App() {
       setSnapshot((current) => (current ? { ...current, config } : current));
       setToast("设置已保存，重启应用后生效。");
     } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function applyProfiles(next: ProfileList) {
+    setSnapshot((current) =>
+      current
+        ? {
+            ...current,
+            config: {
+              ...current.config,
+              activeProfileId: next.activeProfileId,
+              profiles: next.profiles,
+            },
+          }
+        : current,
+    );
+  }
+
+  async function switchProfile(id: string) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<ProfileList>("profile.switch", { id });
+      applyProfiles(next);
+      setToast("Profile 已切换，重启应用后生效。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "切换失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveProfile(profile: ProfileDraft) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<ProfileList>("profile.save", profile);
+      applyProfiles(next);
+      setToast(profile.id ? "Profile 已保存，重启应用后生效。" : "Profile 已新增。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteProfile(id: string) {
+    if (!window.confirm("删除这个 Profile？用户数据目录不会被删除。")) return;
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<ProfileList>("profile.delete", { id });
+      applyProfiles(next);
+      setToast("Profile 已删除。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function exitApplication() {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      await bridge("app.exit");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "关闭失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveProxyEnabled(enabled: boolean) {
+    setProxyEnabled(enabled);
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const config = await bridge<PublicConfig>("config.saveBasics", {
+        requestProxyEnabled: enabled,
+        requestProxyPort: snapshot?.config.requestProxyPort,
+      });
+      setSnapshot((current) => (current ? { ...current, config } : current));
+      setToast("请求监控代理已保存，重启应用后生效。");
+    } catch (err) {
+      setProxyEnabled(snapshot?.config.requestProxyEnabled ?? false);
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
@@ -166,19 +278,14 @@ function App() {
       </aside>
 
       <section className="content">
-        <header className="content-header">
-          <div>
-            <h1 className="title-row">
-              <Settings size={16} strokeWidth={1.4} aria-hidden="true" />
-              <span>{sections.find((item) => item.key === active)?.label}</span>
-            </h1>
-            <p>{subtitle(active)}</p>
-          </div>
-          <button className="ghost-button" onClick={load} disabled={loading} type="button">
-            <RefreshCw className={loading ? "spin" : undefined} size={14} strokeWidth={1.4} />
-            刷新
-          </button>
-        </header>
+        {active !== "browser" && (
+          <PageHeader
+            title={sections.find((item) => item.key === active)?.label ?? ""}
+            subtitle={subtitle(active)}
+            loading={loading}
+            onRefresh={load}
+          />
+        )}
 
         {error && <div className="error-banner">{error}</div>}
         {toast && <div className="toast-banner">{toast}</div>}
@@ -188,8 +295,27 @@ function App() {
         ) : (
           <>
             {active === "overview" && <Overview snapshot={snapshot} />}
-            {active === "browser" && <BrowserSettings config={config} />}
-            {active === "proxy" && <ProxySettings config={config} />}
+            {active === "browser" && (
+              <BrowserSettings
+                config={config}
+                loading={loading}
+                saving={saving}
+                onRefresh={load}
+                onRestartApplication={exitApplication}
+                onSwitchProfile={switchProfile}
+                onSaveProfile={saveProfile}
+                onDeleteProfile={deleteProfile}
+              />
+            )}
+            {active === "proxy" && (
+              <ProxySettings
+                config={config}
+                proxyEnabled={proxyEnabled}
+                saving={saving}
+                onProxyEnabledChange={saveProxyEnabled}
+                onRestartApplication={exitApplication}
+              />
+            )}
             {active === "debug" && (
               <DebugSettings
                 enabled={debugEnabled}
@@ -209,6 +335,8 @@ function App() {
 }
 
 function Overview({ snapshot }: { snapshot: Snapshot }) {
+  const [secretVisible, setSecretVisible] = React.useState(false);
+  const ownerPassword = snapshot.ownerPassword || "";
   return (
     <div className="settings-panel">
       <SettingRow title="DevSpace" description={snapshot.services.devspace.message}>
@@ -220,36 +348,401 @@ function Overview({ snapshot }: { snapshot: Snapshot }) {
       <SettingRow title="MCP 地址" description={snapshot.config.mcpUrl}>
         <CopyText text={snapshot.config.mcpUrl} />
       </SettingRow>
+      <SettingRow title="OAuth 密钥" description={ownerPassword ? (secretVisible ? ownerPassword : maskSecret(ownerPassword)) : "未生成"}>
+        <IconButton
+          label={secretVisible ? "隐藏 OAuth 密钥" : "显示 OAuth 密钥"}
+          disabled={!ownerPassword}
+          onClick={() => setSecretVisible((value) => !value)}
+        >
+          {secretVisible ? <EyeOff size={14} strokeWidth={1.4} aria-hidden="true" /> : <Eye size={14} strokeWidth={1.4} aria-hidden="true" />}
+        </IconButton>
+      </SettingRow>
       <SettingRow title="上次检查" description={new Date(snapshot.checkedAt).toLocaleString()} />
     </div>
   );
 }
 
-function BrowserSettings({ config }: { config: PublicConfig }) {
+function maskSecret(value: string) {
+  if (!value) return "";
+  if (value.length <= 8) return "••••••••";
+  return `${value.slice(0, 4)}${"•".repeat(Math.min(18, value.length - 8))}${value.slice(-4)}`;
+}
+
+function PageHeader({
+  title,
+  subtitle,
+  loading,
+  onRefresh,
+}: {
+  title: string;
+  subtitle: string;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <header className="content-header">
+      <div>
+        <h1 className="title-row">
+          <Settings size={16} strokeWidth={1.4} aria-hidden="true" />
+          <span>{title}</span>
+        </h1>
+        <p>{subtitle}</p>
+      </div>
+      <button className="ghost-button" onClick={onRefresh} disabled={loading} type="button">
+        <RefreshCw className={loading ? "spin" : undefined} size={14} strokeWidth={1.4} />
+        刷新
+      </button>
+    </header>
+  );
+}
+
+type BrowserView = "list" | "create" | "edit" | "info";
+
+type ProfileDraft = {
+  id?: string;
+  name: string;
+  proxyServer: string;
+  language: string;
+  userDataFolder?: string;
+};
+
+function BrowserSettings({
+  config,
+  loading,
+  saving,
+  onRefresh,
+  onRestartApplication,
+  onSwitchProfile,
+  onSaveProfile,
+  onDeleteProfile,
+}: {
+  config: PublicConfig;
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onRestartApplication: () => Promise<void>;
+  onSwitchProfile: (id: string) => Promise<void>;
+  onSaveProfile: (profile: ProfileDraft) => Promise<void>;
+  onDeleteProfile: (id: string) => Promise<void>;
+}) {
+  const [view, setView] = React.useState<BrowserView>("list");
+  const [selectedProfile, setSelectedProfile] = React.useState<PublicProfile | null>(null);
+  const [reverse, setReverse] = React.useState(false);
+
+  function openProfile(nextView: Exclude<BrowserView, "list">, profile: PublicProfile | null = null) {
+    setSelectedProfile(profile);
+    setReverse(false);
+    setView(nextView);
+  }
+
+  function backToList() {
+    setReverse(true);
+    setView("list");
+  }
+
+  async function saveDraft(draft: ProfileDraft) {
+    await onSaveProfile(draft);
+    backToList();
+  }
+
   const activeProfile = config.profiles.find((profile) => profile.id === config.activeProfileId);
   return (
-    <div className="settings-panel">
-      <SettingRow title="当前 Profile" description={activeProfile ? activeProfile.name : config.activeProfileId}>
-        <span className="muted-value">{config.activeProfileId}</span>
-      </SettingRow>
-      <SettingRow title="用户数据目录" description={activeProfile?.userDataFolder ?? "未配置"} />
-      <SettingRow title="语言" description={activeProfile?.language ?? "zh-CN"} />
-      <SettingRow title="代理状态" description={activeProfile?.proxyConfigured ? "当前 Profile 已配置出站代理" : "当前 Profile 未配置出站代理"}>
-        <StatusPill ok={Boolean(activeProfile?.proxyConfigured)} okText="已配置" failText="未配置" />
-      </SettingRow>
+    <div className="settings-panel browser-panel">
+      <div className={view === "list" ? `browser-view ${reverse ? "slide-in-left" : ""}` : "browser-view slide-out-left"}>
+        {view === "list" && (
+          <ProfileListView
+            profiles={config.profiles}
+            activeProfileId={config.activeProfileId}
+            loading={loading}
+            saving={saving}
+            onRefresh={onRefresh}
+            onRestartApplication={onRestartApplication}
+            onCreate={() => openProfile("create")}
+            onInfo={(profile) => openProfile("info", profile)}
+            onEdit={(profile) => openProfile("edit", profile)}
+            onSwitchProfile={onSwitchProfile}
+            onDeleteProfile={onDeleteProfile}
+          />
+        )}
+      </div>
+      {view !== "list" && (
+        <div className="browser-view slide-in-right">
+          {view === "info" && selectedProfile && (
+            <ProfileInfoView
+              profile={selectedProfile}
+              active={selectedProfile.id === config.activeProfileId}
+              onBack={backToList}
+              onEdit={() => openProfile("edit", selectedProfile)}
+            />
+          )}
+          {view !== "info" && (
+            <ProfileEditorView
+              profile={view === "edit" ? selectedProfile : null}
+              activeProfile={activeProfile}
+              saving={saving}
+              onBack={backToList}
+              onSave={saveDraft}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function ProxySettings({ config }: { config: PublicConfig }) {
+function ProfileListView({
+  profiles,
+  activeProfileId,
+  loading,
+  saving,
+  onRefresh,
+  onRestartApplication,
+  onCreate,
+  onInfo,
+  onEdit,
+  onSwitchProfile,
+  onDeleteProfile,
+}: {
+  profiles: PublicProfile[];
+  activeProfileId: string;
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onRestartApplication: () => Promise<void>;
+  onCreate: () => void;
+  onInfo: (profile: PublicProfile) => void;
+  onEdit: (profile: PublicProfile) => void;
+  onSwitchProfile: (id: string) => Promise<void>;
+  onDeleteProfile: (id: string) => Promise<void>;
+}) {
+  return (
+    <>
+      <PageHeader title="浏览器" subtitle={subtitle("browser")} loading={loading} onRefresh={onRefresh} />
+      <div className="browser-toolbar">
+        <div>
+          <div className="toolbar-title">Profile</div>
+          <div className="toolbar-subtitle">管理 ChatGPT WebView 的用户数据目录和出站代理。</div>
+        </div>
+        <button className="primary-button" type="button" onClick={onCreate}>
+          <Plus size={14} strokeWidth={1.4} aria-hidden="true" />
+          新增
+        </button>
+      </div>
+
+      <div className="profile-list" aria-label="浏览器 Profile 列表">
+        {profiles.map((profile) => {
+          const active = profile.id === activeProfileId;
+          return (
+            <div className="profile-row" key={profile.id}>
+              <div className="profile-main">
+                <div className="profile-name-line">
+                  <span className="profile-name">{profile.name}</span>
+                  {active && <StatusPill ok okText="当前" />}
+                  {profile.proxyConfigured ? <StatusPill ok okText="代理" /> : <StatusPill ok={false} failText="系统代理" />}
+                </div>
+                <div className="profile-meta">{profile.userDataFolder}</div>
+                <div className="profile-meta">{profile.proxyConfigured ? profile.proxyServer : "未设置浏览器代理，将使用系统代理"}</div>
+              </div>
+              <div className="profile-actions">
+                {!active && (
+                  <button className="secondary-button" type="button" disabled={saving} onClick={() => void onSwitchProfile(profile.id)}>
+                    切换
+                  </button>
+                )}
+                <IconButton label="信息" onClick={() => onInfo(profile)}>
+                  <Info size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+                <IconButton label="修改" onClick={() => onEdit(profile)}>
+                  <Pencil size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+                <IconButton label="删除" disabled={profiles.length <= 1 || saving} danger onClick={() => void onDeleteProfile(profile.id)}>
+                  <Trash2 size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <RestartNotice
+        text="切换或修改当前 Profile 后，需要重启应用才会使用新的浏览器配置。"
+        buttonText="重启应用"
+        saving={saving}
+        onRestart={onRestartApplication}
+      />
+    </>
+  );
+}
+
+function ProfileInfoView({
+  profile,
+  active,
+  onBack,
+  onEdit,
+}: {
+  profile: PublicProfile;
+  active: boolean;
+  onBack: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <>
+      <SubpageHeader title="Profile 信息" onBack={onBack}>
+        <button className="secondary-button" type="button" onClick={onEdit}>
+          <Pencil size={14} strokeWidth={1.4} aria-hidden="true" />
+          修改
+        </button>
+      </SubpageHeader>
+      <SettingRow title="名称" description={profile.name}>
+        {active && <StatusPill ok okText="当前" />}
+      </SettingRow>
+      <SettingRow title="ID" description={profile.id} />
+      <SettingRow title="用户数据目录" description={profile.userDataFolder} />
+      <SettingRow title="语言" description={profile.language || "zh-CN"} />
+      <SettingRow title="浏览器代理" description={profile.proxyServer || "未设置，将使用系统代理"}>
+        <StatusPill ok={profile.proxyConfigured} okText="已配置" failText="系统代理" />
+      </SettingRow>
+    </>
+  );
+}
+
+function ProfileEditorView({
+  profile,
+  activeProfile,
+  saving,
+  onBack,
+  onSave,
+}: {
+  profile: PublicProfile | null;
+  activeProfile?: PublicProfile;
+  saving: boolean;
+  onBack: () => void;
+  onSave: (profile: ProfileDraft) => Promise<void>;
+}) {
+  const [name, setName] = React.useState(profile?.name ?? "新 Profile");
+  const [language, setLanguage] = React.useState(profile?.language ?? activeProfile?.language ?? "zh-CN");
+  const [proxyServer, setProxyServer] = React.useState(profile?.proxyServer ?? "");
+  const [localError, setLocalError] = React.useState("");
+  const isEdit = Boolean(profile);
+
+  async function submit() {
+    setLocalError("");
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setLocalError("Profile 名称不能为空。");
+      return;
+    }
+
+    try {
+      await onSave({
+        id: profile?.id,
+        name: trimmedName,
+        language: language.trim() || "zh-CN",
+        proxyServer: proxyServer.trim(),
+        userDataFolder: profile?.userDataFolder,
+      });
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  return (
+    <>
+      <SubpageHeader title={isEdit ? "修改 Profile" : "新增 Profile"} onBack={onBack} />
+      {localError && <div className="inline-error">{localError}</div>}
+      <EditRow label="名称">
+        <input className="text-input" value={name} onChange={(event) => setName(event.target.value)} aria-label="Profile 名称" />
+      </EditRow>
+      <EditRow label="语言">
+        <input className="text-input compact" value={language} onChange={(event) => setLanguage(event.target.value)} aria-label="语言" />
+      </EditRow>
+      <EditRow label="代理">
+        <input
+          className="text-input wide"
+          value={proxyServer}
+          onChange={(event) => setProxyServer(event.target.value)}
+          placeholder="socks5://127.0.0.1:7890"
+          aria-label="浏览器代理"
+        />
+      </EditRow>
+      <div className="panel-footer">
+        <p>{proxyServer.trim() ? "保存后需要重启应用才会使用新的代理。" : "不填写代理时会使用系统代理。"}</p>
+        <button className="primary-button" type="button" onClick={() => void submit()} disabled={saving}>
+          {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <CheckCircle2 size={14} strokeWidth={1.4} />}
+          {saving ? "保存中" : "保存"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function SubpageHeader({ title, onBack, children }: { title: string; onBack: () => void; children?: React.ReactNode }) {
+  return (
+    <div className="subpage-header">
+      <button className="back-button" type="button" onClick={onBack} aria-label="返回">
+        <ArrowLeft size={15} strokeWidth={1.45} aria-hidden="true" />
+      </button>
+      <div className="subpage-title">{title}</div>
+      <div className="subpage-actions">{children}</div>
+    </div>
+  );
+}
+
+function EditRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="edit-row">
+      <label>{label}</label>
+      <div className="edit-control">{children}</div>
+    </div>
+  );
+}
+
+function IconButton({
+  label,
+  children,
+  onClick,
+  disabled,
+  danger,
+}: {
+  label: string;
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button className={danger ? "icon-button danger" : "icon-button"} type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}>
+      {children}
+    </button>
+  );
+}
+
+function ProxySettings({
+  config,
+  proxyEnabled,
+  saving,
+  onProxyEnabledChange,
+  onRestartApplication,
+}: {
+  config: PublicConfig;
+  proxyEnabled: boolean;
+  saving: boolean;
+  onProxyEnabledChange: (value: boolean) => Promise<void>;
+  onRestartApplication: () => Promise<void>;
+}) {
   return (
     <div className="settings-panel">
       <SettingRow title="请求监控代理" description={config.requestProxyEnabled ? "DevSpace MCP 请求会经过本地监控代理。" : "当前直连 DevSpace 服务。"}>
-        <StatusPill ok={config.requestProxyEnabled} okText="开启" failText="关闭" />
+        <Switch checked={proxyEnabled} onChange={(value) => void onProxyEnabledChange(value)} label="切换请求监控代理" disabled={saving} />
       </SettingRow>
       <SettingRow title="监控代理端口" description={`127.0.0.1:${config.requestProxyPort}`} />
       <SettingRow title="DevSpace 端口" description={`127.0.0.1:${config.devSpacePort}`} />
       <SettingRow title="公网地址" description={config.publicBaseUrl} />
+      <RestartNotice
+        text="请求监控代理切换后，需要重启应用才会使用新的转发链路。"
+        buttonText="重启应用"
+        saving={saving}
+        onRestart={onRestartApplication}
+      />
     </div>
   );
 }
@@ -327,7 +820,39 @@ function SettingRow({ title, description, children }: { title: string; descripti
   );
 }
 
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+function RestartNotice({
+  text,
+  buttonText,
+  saving,
+  onRestart,
+}: {
+  text: string;
+  buttonText: string;
+  saving: boolean;
+  onRestart: () => Promise<void>;
+}) {
+  return (
+    <div className="panel-footer restart-footer">
+      <p>{text}</p>
+      <button className="secondary-button" type="button" disabled={saving} onClick={() => void onRestart()}>
+        {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <RotateCw size={14} strokeWidth={1.4} />}
+        {saving ? "处理中" : buttonText}
+      </button>
+    </div>
+  );
+}
+
+function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -335,6 +860,7 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (val
       aria-checked={checked}
       aria-label={label}
       className={checked ? "switch checked" : "switch"}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     >
       <span />
@@ -359,7 +885,7 @@ function subtitle(section: SectionKey) {
     case "overview":
       return "查看当前服务状态和连接地址。";
     case "browser":
-      return "查看 ChatGPT WebView 使用的 Profile 信息。";
+      return "管理 ChatGPT WebView 使用的 Profile、用户数据目录和浏览器代理。";
     case "proxy":
       return "查看 DevSpace 请求监控和端口配置。";
     case "debug":

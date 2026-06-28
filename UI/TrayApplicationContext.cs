@@ -12,6 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _startupTimer;
     private readonly Control _dispatcher = new();
+    private readonly CancellationTokenSource _backgroundWorkerCts = new();
     private MainWindow? _mainWindow;
     private bool _refreshing;
     private bool _healthy;
@@ -60,6 +61,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         await Task.Delay(1000);
         _ = Task.Run(() => _app.McpProxy.EnsureState());
+        _ = Task.Run(() => _app.Worker.RunAsync(_backgroundWorkerCts.Token), _backgroundWorkerCts.Token);
         _ = RefreshStatusAsync();
         _ = CheckUpdatesInBackgroundAsync();
         _ = InitializeServicesAsync();
@@ -68,14 +70,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ContextMenuStrip BuildMenu()
     {
         var menu = CreateTrayMenu();
-        AddTrayMenuItem(menu, "启动全部", async (_, _) => await RunProcessActionAsync("启动全部", _app.Processes.StartAll));
+        AddTrayMenuItem(menu, "启动全部", async (_, _) => await RunProcessActionAsync("启动全部", token => _app.Processes.StartAllAsync(token)));
         AddTrayMenuItem(menu, "停止全部", async (_, _) => await RunProcessActionAsync("停止全部", _app.Processes.StopAll));
-        AddTrayMenuItem(menu, "重启全部", async (_, _) => await RunProcessActionAsync("重启全部", _app.Processes.RestartAll));
+        AddTrayMenuItem(menu, "重启全部", async (_, _) => await RunProcessActionAsync("重启全部", token => _app.Processes.RestartAllAsync(token)));
         AddTraySeparator(menu);
         AddTrayMenuItem(menu, "启动 DevSpace", async (_, _) => await RunProcessActionAsync("启动 DevSpace", () => _app.Processes.Start(ProcessRole.DevSpace)));
         AddTrayMenuItem(menu, "重启 DevSpace", async (_, _) => await RunProcessActionAsync("重启 DevSpace", () => _app.Processes.Restart(ProcessRole.DevSpace)));
-        AddTrayMenuItem(menu, "启动隧道", async (_, _) => await RunProcessActionAsync("启动隧道", () => _app.Processes.Start(ProcessRole.CloudflareTunnel)));
-        AddTrayMenuItem(menu, "重启隧道", async (_, _) => await RunProcessActionAsync("重启隧道", () => _app.Processes.Restart(ProcessRole.CloudflareTunnel)));
+        AddTrayMenuItem(menu, "启动隧道", async (_, _) => await RunProcessActionAsync("启动隧道", token => _app.Processes.StartAsync(ProcessRole.CloudflareTunnel, token)));
+        AddTrayMenuItem(menu, "重启隧道", async (_, _) => await RunProcessActionAsync("重启隧道", token => _app.Processes.RestartAsync(ProcessRole.CloudflareTunnel, token)));
         AddTraySeparator(menu);
         AddTrayMenuItem(menu, "检查更新", async (_, _) => await CheckUpdatesAsync());
         AddTrayMenuItem(menu, "打开日志", (_, _) => OpenFolder(AppPaths.LogDirectory));
@@ -278,10 +280,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task RunProcessActionAsync(string actionName, Action action)
     {
+        await RunProcessActionAsync(actionName, _ =>
+        {
+            action();
+            return Task.CompletedTask;
+        });
+    }
+
+    private async Task RunProcessActionAsync(string actionName, Func<CancellationToken, Task> action)
+    {
         try
         {
             _tray.Text = $"DevSpace 管理器 - 正在{actionName}";
-            action();
+            await action(CancellationToken.None);
             await Task.Delay(1200);
             await RefreshStatusAsync();
             _tray.ShowBalloonTip(2500, "DevSpace 管理器", $"{actionName}已执行。", ToolTipIcon.Info);
@@ -300,7 +311,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var checks = await _app.Environment.CheckAsync();
             if (checks.All(check => check.Ok))
             {
-                _app.Processes.StartAll();
                 await RefreshStatusAsync();
                 return;
             }
@@ -312,8 +322,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ToolTipIcon.Warning);
             ShowSettings();
         }
-        catch
+        catch (Exception ex)
         {
+            Log.App($"InitializeServices failed: {ex}");
             // Settings remains available from the tray even if detection fails.
         }
     }
@@ -403,6 +414,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (disposing)
         {
             _exiting = true;
+            _backgroundWorkerCts.Cancel();
             if (_mainWindow is not null)
             {
                 _mainWindow.Close();
@@ -414,6 +426,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _tray.Visible = false;
             _tray.Icon?.Dispose();
             _tray.Dispose();
+            _backgroundWorkerCts.Dispose();
             _app.Dispose();
         }
         base.Dispose(disposing);

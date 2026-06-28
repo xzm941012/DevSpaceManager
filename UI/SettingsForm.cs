@@ -99,9 +99,9 @@ internal sealed class SettingsForm : Form
         root.Controls.Add(footer, 0, 2);
 
         var quick = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        quick.Controls.Add(Button("启动全部", async (_, _) => await RunProcessActionAsync("启动全部", _app.Processes.StartAll)));
+        quick.Controls.Add(Button("启动全部", async (_, _) => await RunProcessActionAsync("启动全部", token => _app.Processes.StartAllAsync(token))));
         quick.Controls.Add(Button("停止全部", async (_, _) => await RunProcessActionAsync("停止全部", _app.Processes.StopAll)));
-        quick.Controls.Add(Button("重启全部", async (_, _) => await RunProcessActionAsync("重启全部", _app.Processes.RestartAll)));
+        quick.Controls.Add(Button("重启全部", async (_, _) => await RunProcessActionAsync("重启全部", token => _app.Processes.RestartAllAsync(token))));
         _syncDomainButton = Button("同步域名并重启", async (_, _) => await SyncDomainAsync());
         quick.Controls.Add(_syncDomainButton);
         _quickCheckUpdatesButton = Button("检查更新", async (_, _) => await CheckUpdatesAsync());
@@ -978,9 +978,18 @@ internal sealed class SettingsForm : Form
 
     private async Task RunProcessActionAsync(string actionName, Action action)
     {
-        await RunBusyAsync($"正在{actionName}...", async () =>
+        await RunProcessActionAsync(actionName, _ =>
         {
             action();
+            return Task.CompletedTask;
+        });
+    }
+
+    private async Task RunProcessActionAsync(string actionName, Func<CancellationToken, Task> action)
+    {
+        await RunBusyAsync($"正在{actionName}...", async () =>
+        {
+            await action(CancellationToken.None);
             _status.Text = $"{actionName}已执行，正在刷新状态...";
             await Task.Delay(1200);
             await RefreshOverviewAsync();
@@ -997,8 +1006,8 @@ internal sealed class SettingsForm : Form
             var hostname = new Uri(_app.PublicEndpoints.ResolveFixedPublicBaseUrl(config)).Host;
             PublicEndpointSyncService.WriteCloudflaredIngress(config.CloudflaredConfigPath, hostname, PublicEndpointSyncService.CloudflaredServicePort(config));
             RunCloudflaredDnsRoute(config, hostname);
-            _app.Processes.Restart(ProcessRole.CloudflareTunnel);
             _app.Processes.Restart(ProcessRole.DevSpace);
+            await _app.Processes.RestartAsync(ProcessRole.CloudflareTunnel);
             LoadRawConfigs();
             await RefreshOverviewAsync();
             _status.Text = $"域名已同步：{hostname}";

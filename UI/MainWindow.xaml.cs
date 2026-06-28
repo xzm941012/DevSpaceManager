@@ -123,6 +123,7 @@ public sealed partial class MainWindow
             null,
             environmentRequest.UserDataFolder,
             environmentRequest.Options);
+        ResetChatGptView();
         var chatGptView = EnsureChatGptView();
         await chatGptView.EnsureCoreWebView2Async(env);
         chatGptView.CoreWebView2.Settings.AreDevToolsEnabled = true;
@@ -184,6 +185,20 @@ public sealed partial class MainWindow
         };
         ChatGptHost.Children.Add(_chatGptView);
         return _chatGptView;
+    }
+
+    private void ResetChatGptView()
+    {
+        if (_chatGptView is null)
+        {
+            _chatGptEventsAttached = false;
+            return;
+        }
+
+        ChatGptHost.Children.Remove(_chatGptView);
+        _chatGptView.Dispose();
+        _chatGptView = null;
+        _chatGptEventsAttached = false;
     }
 
     private Task<ChatGptEnvironmentRequest> CreateChatGptEnvironmentRequestAsync()

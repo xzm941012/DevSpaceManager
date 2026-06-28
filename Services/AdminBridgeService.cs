@@ -55,17 +55,21 @@ internal sealed class AdminBridgeService
         return command switch
         {
             "app.snapshot" => await BuildSnapshotAsync(cancellationToken),
+            "app.reloadChatGpt" => await ReloadChatGptViewAsync(),
+            "app.exit" => ExitApplication(),
             "devspace.start" => ProcessAction(ProcessRole.DevSpace, _app.Processes.Start),
             "devspace.stop" => ProcessAction(ProcessRole.DevSpace, _app.Processes.Stop),
             "devspace.restart" => ProcessAction(ProcessRole.DevSpace, _app.Processes.Restart),
-            "tunnel.start" => ProcessAction(ProcessRole.CloudflareTunnel, _app.Processes.Start),
+            "tunnel.start" => await ProcessActionAsync(token => _app.Processes.StartAsync(ProcessRole.CloudflareTunnel, token), cancellationToken),
             "tunnel.stop" => ProcessAction(ProcessRole.CloudflareTunnel, _app.Processes.Stop),
-            "tunnel.restart" => ProcessAction(ProcessRole.CloudflareTunnel, _app.Processes.Restart),
-            "services.startAll" => ProcessAction(_app.Processes.StartAll),
+            "tunnel.restart" => await ProcessActionAsync(token => _app.Processes.RestartAsync(ProcessRole.CloudflareTunnel, token), cancellationToken),
+            "services.startAll" => await ProcessActionAsync(_app.Processes.StartAllAsync, cancellationToken),
             "services.stopAll" => ProcessAction(_app.Processes.StopAll),
-            "services.restartAll" => ProcessAction(_app.Processes.RestartAll),
+            "services.restartAll" => await ProcessActionAsync(_app.Processes.RestartAllAsync, cancellationToken),
             "profile.list" => BuildProfiles(),
             "profile.switch" => await SwitchProfileAsync(payload),
+            "profile.save" => await SaveProfileAsync(payload),
+            "profile.delete" => await DeleteProfileAsync(payload),
             "config.saveBasics" => await SaveBasicsAsync(payload),
             "debug.save" => await SaveDebugAsync(payload),
             "log.tail" => TailLog(payload),
@@ -87,6 +91,7 @@ internal sealed class AdminBridgeService
         {
             checkedAt = DateTimeOffset.Now,
             config = PublicConfig(config),
+            ownerPassword = _app.AuthSecrets.ReadOwnerPassword(),
             services = new
             {
                 devspace = new { running = devspaceRunning || local.Ok, healthOk = local.Ok, message = local.Message },
@@ -123,12 +128,101 @@ internal sealed class AdminBridgeService
 
         config.ActiveBrowserProfileId = id;
         _app.ConfigStore.Save(config);
-        if (_reloadChatGptView is not null)
+        await Task.CompletedTask;
+
+        return BuildProfiles();
+    }
+
+    private async Task<object> SaveProfileAsync(JsonElement payload)
+    {
+        var id = payload.TryGetProperty("id", out var idElement) ? idElement.GetString()?.Trim() ?? "" : "";
+        var name = RequiredString(payload, "name");
+        var proxyServer = payload.TryGetProperty("proxyServer", out var proxyElement) ? NormalizeProxyServer(proxyElement.GetString() ?? "") : "";
+        var language = payload.TryGetProperty("language", out var languageElement) ? NormalizeLanguage(languageElement.GetString() ?? "") : "zh-CN";
+        var userDataFolder = payload.TryGetProperty("userDataFolder", out var folderElement) ? folderElement.GetString()?.Trim() ?? "" : "";
+
+        var config = _app.ConfigStore.Reload();
+        var isNew = string.IsNullOrWhiteSpace(id);
+        BrowserProfileConfig profile;
+        if (isNew)
+        {
+            id = CreateProfileId(name, config.BrowserProfiles.Select(item => item.Id));
+            profile = new BrowserProfileConfig
+            {
+                Id = id,
+                Name = name,
+                UserDataFolder = string.IsNullOrWhiteSpace(userDataFolder)
+                    ? Path.Combine(AppPaths.BrowserProfilesDirectory, id)
+                    : userDataFolder,
+                Language = language,
+                ProxyServer = proxyServer
+            };
+            config.BrowserProfiles.Add(profile);
+        }
+        else
+        {
+            profile = config.BrowserProfiles.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))
+                      ?? throw new InvalidOperationException("未找到浏览器 Profile。");
+            profile.Name = name;
+            profile.Language = language;
+            profile.ProxyServer = proxyServer;
+            if (!string.IsNullOrWhiteSpace(userDataFolder))
+            {
+                profile.UserDataFolder = userDataFolder;
+            }
+        }
+
+        Directory.CreateDirectory(profile.UserDataFolder);
+        _app.ConfigStore.Save(config);
+        await Task.CompletedTask;
+
+        return BuildProfiles();
+    }
+
+    private async Task<object> DeleteProfileAsync(JsonElement payload)
+    {
+        var id = RequiredString(payload, "id");
+        var config = _app.ConfigStore.Reload();
+        if (config.BrowserProfiles.Count <= 1)
+        {
+            throw new InvalidOperationException("至少需要保留一个浏览器 Profile。");
+        }
+
+        var removed = config.BrowserProfiles.RemoveAll(profile => string.Equals(profile.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (removed == 0)
+        {
+            throw new InvalidOperationException("未找到浏览器 Profile。");
+        }
+
+        var activeChanged = string.Equals(config.ActiveBrowserProfileId, id, StringComparison.OrdinalIgnoreCase);
+        if (activeChanged)
+        {
+            config.ActiveBrowserProfileId = config.BrowserProfiles[0].Id;
+        }
+
+        _app.ConfigStore.Save(config);
+        if (activeChanged && _reloadChatGptView is not null)
         {
             await _reloadChatGptView();
         }
 
         return BuildProfiles();
+    }
+
+    private async Task<object> ReloadChatGptViewAsync()
+    {
+        if (_reloadChatGptView is not null)
+        {
+            await _reloadChatGptView();
+        }
+
+        return new { ok = true };
+    }
+
+    private static object ExitApplication()
+    {
+        System.Windows.Forms.Application.Exit();
+        return new { ok = true };
     }
 
     private async Task<object> SaveBasicsAsync(JsonElement payload)
@@ -251,6 +345,12 @@ internal sealed class AdminBridgeService
         return new { ok = true };
     }
 
+    private static async Task<object> ProcessActionAsync(Func<CancellationToken, Task> action, CancellationToken cancellationToken)
+    {
+        await action(cancellationToken);
+        return new { ok = true };
+    }
+
     private static object PublicConfig(ManagerConfig config) => new
     {
         config.PublicBaseUrl,
@@ -277,6 +377,7 @@ internal sealed class AdminBridgeService
         profile.Id,
         profile.Name,
         profile.UserDataFolder,
+        profile.ProxyServer,
         proxyConfigured = !string.IsNullOrWhiteSpace(profile.ProxyServer),
         profile.Language,
         profile.Temporary
@@ -296,6 +397,62 @@ internal sealed class AdminBridgeService
         }
 
         return text;
+    }
+
+    private static string NormalizeLanguage(string value)
+    {
+        var language = value.Trim();
+        if (string.IsNullOrWhiteSpace(language)) return "zh-CN";
+        if (language.Length > 32)
+        {
+            throw new InvalidOperationException("语言标识太长。");
+        }
+
+        return language;
+    }
+
+    private static string NormalizeProxyServer(string value)
+    {
+        var proxy = value.Trim();
+        if (string.IsNullOrWhiteSpace(proxy)) return "";
+
+        var supported = new[] { "http://", "https://", "socks4://", "socks5://" };
+        if (!supported.Any(prefix => proxy.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (Uri.TryCreate($"http://{proxy}", UriKind.Absolute, out var hostPort) && !string.IsNullOrWhiteSpace(hostPort.Host) && hostPort.Port > 0)
+            {
+                return proxy;
+            }
+
+            throw new InvalidOperationException("浏览器代理需要填写 HTTP、HTTPS 或 SOCKS 代理地址，例如 socks5://127.0.0.1:7890。Trojan 节点需要先由本地代理客户端转换。");
+        }
+
+        if (!Uri.TryCreate(proxy, UriKind.Absolute, out var uri) || string.IsNullOrWhiteSpace(uri.Host) || uri.Port <= 0)
+        {
+            throw new InvalidOperationException("代理地址格式不正确，例如 socks5://127.0.0.1:7890。");
+        }
+
+        return proxy;
+    }
+
+    private static string CreateProfileId(string name, IEnumerable<string> existingIds)
+    {
+        var baseId = new string(name.Trim().ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-')
+            .ToArray())
+            .Trim('-');
+        if (string.IsNullOrWhiteSpace(baseId)) baseId = "profile";
+        if (baseId.Length > 32) baseId = baseId[..32].Trim('-');
+
+        var used = existingIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var id = baseId;
+        var index = 2;
+        while (used.Contains(id))
+        {
+            id = $"{baseId}-{index++}";
+        }
+
+        return id;
     }
 
     private static string NormalizeBaseUrl(string value)

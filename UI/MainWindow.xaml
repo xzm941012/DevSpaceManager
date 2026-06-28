@@ -385,6 +385,7 @@
                         </Menu.Resources>
                         <MenuItem Header="文件" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="设置" Click="SettingsMenuItem_OnClick" />
+                            <MenuItem Header="环境设置" Click="EnvironmentSetupMenuItem_OnClick" />
                             <Separator Style="{StaticResource ChromeMenuSeparatorStyle}" />
                             <MenuItem Header="退出" Click="ExitMenuItem_OnClick" />
                         </MenuItem>

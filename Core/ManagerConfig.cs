@@ -19,6 +19,7 @@ internal sealed class ManagerConfig
     public string PublicHealthUrl { get; set; } = "https://devspace.onemem.cc/healthz";
     public string PublicBaseUrl { get; set; } = "https://devspace.onemem.cc";
     public string FixedPublicBaseUrl { get; set; } = "https://devspace.onemem.cc";
+    public bool TemporaryPublicBaseUrlPending { get; set; }
     public bool RequestProxyEnabled { get; set; }
     public int RequestProxyPort { get; set; } = 17676;
     public int HealthCheckSeconds { get; set; } = 60;

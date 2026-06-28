@@ -19,7 +19,9 @@ internal sealed class HealthService
         await CheckAsync(_configStore.Current.LocalHealthUrl, cancellationToken);
 
     public async Task<(bool Ok, string Message)> CheckPublicAsync(CancellationToken cancellationToken = default) =>
-        await CheckAsync(_configStore.Current.PublicHealthUrl, cancellationToken);
+        _configStore.Current is { UseTemporaryCloudflareTunnel: true, TemporaryPublicBaseUrlPending: true }
+            ? (false, "临时公网地址正在刷新。")
+            : await CheckAsync(_configStore.Current.PublicHealthUrl, cancellationToken);
 
     private async Task<(bool Ok, string Message)> CheckAsync(string url, CancellationToken cancellationToken)
     {

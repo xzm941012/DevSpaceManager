@@ -23,8 +23,8 @@ internal sealed class AppHost : IDisposable
         RequestMonitor = new McpRequestMonitor();
         McpProxy = new McpProxyService(ConfigStore, RequestMonitor);
         PublicEndpoints = new PublicEndpointSyncService(ConfigStore);
-        Processes = new ManagedProcessService(ConfigStore, McpProxy, PublicEndpoints);
         Health = new HealthService(ConfigStore);
+        Processes = new ManagedProcessService(ConfigStore, McpProxy, PublicEndpoints, Health);
         NetworkTests = new NetworkTestService(ConfigStore);
         AuthSecrets = new AuthSecretService();
         Environment = new EnvironmentService(ConfigStore);

@@ -65,9 +65,9 @@ internal sealed class InitializationForm : Form
         actions.Controls.Add(Button("安装 Node", (_, _) => RunAction("安装 Node", _app.Environment.InstallSelectedNode)), 2, 0);
         actions.Controls.Add(Button("安装 cloudflared", (_, _) => RunAction("安装 cloudflared", _app.Environment.InstallCloudflared)), 3, 0);
         actions.Controls.Add(Button("安装 DevSpace", (_, _) => RunAction("安装 DevSpace", _app.Environment.InstallDevSpace)), 0, 1);
-        actions.Controls.Add(Button("DevSpace 初始化", (_, _) => RunAction("DevSpace 初始化", _app.Environment.RunDevSpaceInit)), 2, 1);
+        actions.Controls.Add(Button("DevSpace 初始化", (_, _) => RunAction("DevSpace 初始化", () => _app.Environment.RunDevSpaceInit())), 2, 1);
         actions.Controls.Add(Button("Cloudflare 登录", (_, _) => RunAction("Cloudflare 登录", _app.Environment.RunCloudflaredLogin)), 3, 1);
-        actions.Controls.Add(Button("一键配置 Cloudflare", (_, _) => RunAction("一键配置 Cloudflare", _app.Environment.SetupCloudflareTunnel)), 0, 2);
+        actions.Controls.Add(Button("一键配置 Cloudflare", (_, _) => RunAction("一键配置 Cloudflare", () => _app.Environment.SetupCloudflareTunnel())), 0, 2);
         root.Controls.Add(actions, 0, 2);
 
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
