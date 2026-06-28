@@ -925,8 +925,9 @@ internal sealed class SettingsForm : Form
     private void OpenInitialization()
     {
         SaveAll();
-        using var form = new InitializationForm(_app);
-        form.ShowDialog(this);
+        var window = new EnvironmentSetupWindow(_app, orderedMode: false);
+        window.Show();
+        window.Activate();
     }
 
     private async Task RunSpeedTestAsync()

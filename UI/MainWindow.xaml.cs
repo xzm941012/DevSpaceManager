@@ -19,12 +19,14 @@ public sealed partial class MainWindow
 
     private readonly AppHost _app;
     private SettingsWindow? _settingsWindow;
+    private EnvironmentSetupWindow? _environmentSetupWindow;
     private WebView2? _chatGptView;
     private bool _chatGptEventsAttached;
     private bool _isInitialChatGptLoad = true;
     private bool _initialLoadStarted;
     private string _lastRequestedChatGptUri = "https://chatgpt.com";
     private readonly DispatcherTimer _loadingGlowTimer;
+    private readonly DispatcherTimer _environmentDiagnosticTimer = new();
     private readonly Stopwatch _loadingGlowClock = new();
     private TaskCompletionSource? _initialLoadCompletion;
 
@@ -39,8 +41,58 @@ public sealed partial class MainWindow
             Interval = TimeSpan.FromMilliseconds(16)
         };
         _loadingGlowTimer.Tick += (_, _) => UpdateLoadingGlow();
+        _environmentDiagnosticTimer.Interval = TimeSpan.FromSeconds(60);
+        _environmentDiagnosticTimer.Tick += async (_, _) => await RefreshEnvironmentDiagnosticAsync();
         ContentRendered += async (_, _) => await BeginInitialLoadAsync();
+        Loaded += async (_, _) => await InitializeEnvironmentExperienceAsync();
         SourceInitialized += (_, _) => ApplyWindowDwmAttributes();
+    }
+
+    private async Task InitializeEnvironmentExperienceAsync()
+    {
+        await RefreshEnvironmentDiagnosticAsync();
+        _environmentDiagnosticTimer.Start();
+    }
+
+    private async Task RefreshEnvironmentDiagnosticAsync()
+    {
+        try
+        {
+            var diagnostic = await _app.Environment.DiagnoseStartupAsync(_app.Health);
+            Dispatcher.Invoke(() =>
+            {
+                EnvironmentWarningButton.Visibility = diagnostic.Ok
+                    ? System.Windows.Visibility.Collapsed
+                    : System.Windows.Visibility.Visible;
+                EnvironmentWarningToolTipText.Text = ShortEnvironmentTip(diagnostic.Message);
+            });
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                EnvironmentWarningButton.Visibility = System.Windows.Visibility.Visible;
+                EnvironmentWarningToolTipText.Text = ShortEnvironmentTip($"环境检查失败：{ex.Message}");
+            });
+        }
+    }
+
+    private static string ShortEnvironmentTip(string message)
+    {
+        if (message.Contains("基础环境", StringComparison.OrdinalIgnoreCase))
+        {
+            return "基础环境缺失或异常";
+        }
+
+        if (message.Contains("初始化", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Cloudflare", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Tunnel", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("DevSpace", StringComparison.OrdinalIgnoreCase))
+        {
+            return "初始化配置未完成";
+        }
+
+        return "点击查看并处理";
     }
 
     private async Task BeginInitialLoadAsync()
@@ -114,7 +166,6 @@ public sealed partial class MainWindow
             };
             _chatGptEventsAttached = true;
         }
-        await chatGptView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ChatGptInjectionScript());
         _lastRequestedChatGptUri = "https://chatgpt.com";
         chatGptView.Source = new Uri(_lastRequestedChatGptUri);
         UpdateNavigationButtons();
@@ -169,41 +220,6 @@ public sealed partial class MainWindow
     private sealed record ChatGptEnvironmentRequest(
         string UserDataFolder,
         CoreWebView2EnvironmentOptions Options);
-
-    private static string ChatGptInjectionScript()
-    {
-        return """
-        (() => {
-          if (!location.hostname.endsWith('chatgpt.com')) return;
-          const id = 'devspace-chatgpt-input-style';
-          const apply = () => {
-            if (document.getElementById(id)) return;
-            const target = document.head || document.documentElement || document.body;
-            if (!target) return;
-            const style = document.createElement('style');
-            style.id = id;
-            style.textContent = `
-              textarea,
-              [contenteditable="true"] {
-                min-height: 132px !important;
-                max-height: 360px !important;
-              }
-            `;
-            target.appendChild(style);
-          };
-          const start = () => {
-            apply();
-            const root = document.documentElement || document.body;
-            if (root) new MutationObserver(apply).observe(root, { childList: true, subtree: true });
-          };
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', start, { once: true });
-          } else {
-            start();
-          }
-        })();
-        """;
-    }
 
     private void ShowChatGptLoading()
     {
@@ -379,6 +395,11 @@ public sealed partial class MainWindow
         }
     }
 
+    private void EnvironmentWarningButton_OnClick(object sender, System.Windows.RoutedEventArgs e)
+    {
+        ShowEnvironmentSetup(orderedMode: false);
+    }
+
     private void SettingsMenuItem_OnClick(object sender, System.Windows.RoutedEventArgs e)
     {
         if (_settingsWindow is null)
@@ -389,6 +410,38 @@ public sealed partial class MainWindow
         PositionSettingsWindow();
         _settingsWindow.Show();
         _settingsWindow.Activate();
+    }
+
+    private void ShowEnvironmentSetup(bool orderedMode)
+    {
+        if (_environmentSetupWindow is null || !_environmentSetupWindow.IsLoaded)
+        {
+            _environmentSetupWindow = new EnvironmentSetupWindow(_app, orderedMode)
+            {
+                Owner = this
+            };
+            _environmentSetupWindow.Closed += (_, _) =>
+            {
+                _environmentSetupWindow = null;
+                _ = RefreshEnvironmentDiagnosticAsync();
+            };
+        }
+
+        PositionEnvironmentSetupWindow();
+        _environmentSetupWindow.Show();
+        _environmentSetupWindow.Activate();
+    }
+
+    private void PositionEnvironmentSetupWindow()
+    {
+        if (_environmentSetupWindow is null)
+        {
+            return;
+        }
+
+        _environmentSetupWindow.WindowStartupLocation = System.Windows.WindowStartupLocation.Manual;
+        _environmentSetupWindow.Left = Left + Math.Max(0, (ActualWidth - _environmentSetupWindow.Width) / 2);
+        _environmentSetupWindow.Top = Top + Math.Max(0, (ActualHeight - _environmentSetupWindow.Height) / 2);
     }
 
     private void PositionSettingsWindow()
@@ -437,6 +490,11 @@ public sealed partial class MainWindow
         ShowChatGptNavigationGuard();
         _lastRequestedChatGptUri = "https://chatgpt.com";
         _chatGptView?.CoreWebView2?.Navigate(_lastRequestedChatGptUri);
+    }
+
+    private void EnvironmentSetupMenuItem_OnClick(object sender, System.Windows.RoutedEventArgs e)
+    {
+        ShowEnvironmentSetup(orderedMode: false);
     }
 
     private static void OpenExternalNewWindowUri(string? uri)
@@ -500,8 +558,11 @@ public sealed partial class MainWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        _environmentDiagnosticTimer.Stop();
         _settingsWindow?.ForceClose();
         _settingsWindow = null;
+        _environmentSetupWindow?.Close();
+        _environmentSetupWindow = null;
         base.OnClosed(e);
     }
 

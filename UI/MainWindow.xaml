@@ -163,7 +163,7 @@
                                             BorderBrush="#D8D8D3"
                                             BorderThickness="1"
                                             CornerRadius="7"
-                                            Padding="6"
+                                            Padding="0,6"
                                             MinWidth="88"
                                             SnapsToDevicePixels="True">
                                         <Border.Effect>
@@ -182,10 +182,12 @@
                                 <Setter TargetName="TopBorder" Property="Background" Value="#E8E8E5" />
                             </Trigger>
                             <Trigger Property="Role" Value="SubmenuItem">
-                                <Setter Property="Padding" Value="10,6" />
-                                <Setter Property="MinWidth" Value="76" />
+                                <Setter Property="Padding" Value="14,0" />
+                                <Setter Property="MinWidth" Value="104" />
+                                <Setter Property="Height" Value="32" />
                                 <Setter Property="Foreground" Value="#20201D" />
                                 <Setter TargetName="TopBorder" Property="HorizontalAlignment" Value="Stretch" />
+                                <Setter TargetName="TopBorder" Property="CornerRadius" Value="0" />
                                 <Setter TargetName="HeaderText" Property="Visibility" Value="Collapsed" />
                                 <Setter TargetName="SubmenuText" Property="Visibility" Value="Visible" />
                             </Trigger>
@@ -219,6 +221,39 @@
                                 HorizontalAlignment="Stretch"
                                 VerticalAlignment="Center"
                                 SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ChromeToolTipStyle" TargetType="ToolTip">
+            <Setter Property="Placement" Value="Bottom" />
+            <Setter Property="HorizontalOffset" Value="-8" />
+            <Setter Property="VerticalOffset" Value="4" />
+            <Setter Property="HasDropShadow" Value="False" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Grid Background="Transparent" Margin="0,0,10,10">
+                            <Border Background="#FFFFFFFF"
+                                    BorderBrush="#D8D8D3"
+                                    BorderThickness="1"
+                                    CornerRadius="7"
+                                    Padding="10,8"
+                                    MaxWidth="240"
+                                    SnapsToDevicePixels="True">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="18"
+                                                      ShadowDepth="2"
+                                                      Opacity="0.16"
+                                                      Color="#000000" />
+                                </Border.Effect>
+                                <ContentPresenter />
+                            </Border>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -268,9 +303,77 @@
                             Click="RefreshButton_OnClick"
                             Width="26"
                             Height="26"
-                            Margin="0,0,12,0"
+                            Margin="0,0,1,0"
                             Style="{StaticResource ChromeButtonStyle}">
                         <Path Style="{StaticResource TitleIconStyle}" Data="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M3 21v-5h5 M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5" />
+                    </Button>
+                    <Button x:Name="EnvironmentWarningButton"
+                            Click="EnvironmentWarningButton_OnClick"
+                            Width="26"
+                            Height="26"
+                            Margin="0,0,12,0"
+                            Foreground="#B7791F"
+                            Visibility="Collapsed"
+                            ToolTipService.InitialShowDelay="0"
+                            ToolTipService.BetweenShowDelay="0"
+                            ToolTipService.ShowDuration="6000"
+                            Style="{StaticResource ChromeButtonStyle}">
+                        <Button.ToolTip>
+                            <ToolTip Style="{StaticResource ChromeToolTipStyle}">
+                                <StackPanel Orientation="Horizontal">
+                                        <Grid Width="14" Height="14" Margin="0,1,7,0">
+                                            <Path Fill="#F2C94C"
+                                                  Stroke="#A86F00"
+                                                  StrokeThickness="0.45"
+                                                  Stretch="Uniform"
+                                                  Data="M21.73 18 13.73 4a2 2 0 0 0-3.46 0L2.27 18A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                                            <Path Width="5"
+                                                  Height="8"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,2,0,0"
+                                                  Stroke="#5F4200"
+                                                  StrokeThickness="2.2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  Fill="Transparent"
+                                                  Stretch="Uniform"
+                                                  Data="M12 8v5 M12 17h.01" />
+                                        </Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="环境需要处理"
+                                                   Foreground="#20201D"
+                                                   FontSize="12.5"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock x:Name="EnvironmentWarningToolTipText"
+                                                   Text="点击查看并处理"
+                                                   Margin="0,2,0,0"
+                                                   Foreground="#6F6F68"
+                                                   FontSize="11.5"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </ToolTip>
+                        </Button.ToolTip>
+                        <Grid Width="14" Height="14">
+                            <Path Fill="#F2C94C"
+                                  Stroke="#A86F00"
+                                  StrokeThickness="0.45"
+                                  Stretch="Uniform"
+                                  Data="M21.73 18 13.73 4a2 2 0 0 0-3.46 0L2.27 18A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                            <Path Width="5"
+                                  Height="8"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"
+                                  Margin="0,2,0,0"
+                                  Stroke="#5F4200"
+                                  StrokeThickness="2.2"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Fill="Transparent"
+                                  Stretch="Uniform"
+                                  Data="M12 8v5 M12 17h.01" />
+                        </Grid>
                     </Button>
                     <Menu Background="Transparent"
                           BorderThickness="0"
@@ -302,6 +405,7 @@
                         </MenuItem>
                         <MenuItem Header="帮助" Foreground="#6F6F68" Style="{StaticResource ChromeMenuItemStyle}">
                             <MenuItem Header="设置与诊断" Click="SettingsMenuItem_OnClick" />
+                            <MenuItem Header="环境配置" Click="EnvironmentSetupMenuItem_OnClick" />
                         </MenuItem>
                     </Menu>
                 </StackPanel>

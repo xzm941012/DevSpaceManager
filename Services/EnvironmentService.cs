@@ -16,25 +16,27 @@ internal sealed class EnvironmentService
 
     public async Task<IReadOnlyList<EnvironmentCheck>> CheckAsync()
     {
+        var checks = new List<EnvironmentCheck>();
+        checks.AddRange(await CheckBasicEnvironmentAsync());
+        checks.AddRange(await CheckInitializationAsync());
+        return checks;
+    }
+
+    public async Task<IReadOnlyList<EnvironmentCheck>> CheckBasicEnvironmentAsync()
+    {
         var config = _configStore.Reload();
         var nvmCommand = FindNvmCommand();
         var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
         var checks = new List<EnvironmentCheck>
         {
-            await DotNetDesktopRuntimeCheck(),
+            FileCheck("Git Bash", config.GitBashPath),
             FileCheck("nvm for Windows", nvmCommand),
             FileCheck("Node 运行时", Path.Combine(config.NodeDirectory, "node.exe")),
-            FileCheck("Git Bash", config.GitBashPath),
-            FileCheck("DevSpace 命令", config.DevSpaceCommand),
             FileCheck("npm 命令", config.NpmCommand),
-            FileCheck("cloudflared", cloudflaredPath),
-            FileCheck("Cloudflare 登录凭据", AppPaths.CloudflaredCertPath),
-            FileCheck("DevSpace 配置", config.DevSpaceConfigPath),
-            FileCheck("cloudflared 配置", config.CloudflaredConfigPath)
+            FileCheck("DevSpace 命令", config.DevSpaceCommand),
+            FileCheck("cloudflared", cloudflaredPath)
         };
 
-        checks.Add(await CloudflareTunnelNameCheck(config, cloudflaredPath));
-        checks.AddRange(CloudflareConfigChecks(config));
         checks.Add(await VersionCheck("nvm 版本", nvmCommand, "version"));
         checks.Add(await VersionCheck("Node 版本", Path.Combine(config.NodeDirectory, "node.exe"), "--version"));
         checks.Add(await BashVersionCheck("DevSpace 版本", config.GitBashPath, config.DevSpaceCommand, "--help"));
@@ -42,8 +44,65 @@ internal sealed class EnvironmentService
         return checks;
     }
 
-    public void InstallDotNetDesktopRuntime() =>
-        OpenPowerShellCommand("安装 .NET Desktop Runtime 8", "winget install --id Microsoft.DotNet.DesktopRuntime.8 -e --accept-package-agreements --accept-source-agreements");
+    public async Task<IReadOnlyList<EnvironmentCheck>> CheckInitializationAsync()
+    {
+        var config = _configStore.Reload();
+        var checks = new List<EnvironmentCheck>();
+        checks.Add(File.Exists(config.DevSpaceConfigPath)
+            ? new EnvironmentCheck("DevSpace 初始化", true, config.DevSpaceConfigPath)
+            : new EnvironmentCheck("DevSpace 初始化", false, $"缺失：{config.DevSpaceConfigPath}"));
+
+        if (config.UseTemporaryCloudflareTunnel)
+        {
+            checks.Add(new EnvironmentCheck("Cloudflare 登录", true, "已选择临时 tunnel 模式，不需要登录。"));
+            checks.Add(new EnvironmentCheck("Cloudflare Tunnel 配置", true, "临时 tunnel 每次启动都会生成新地址。"));
+        }
+        else
+        {
+            var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
+            checks.Add(FileCheck("Cloudflare 登录凭据", AppPaths.CloudflaredCertPath));
+            checks.Add(await CloudflareTunnelNameCheck(config, cloudflaredPath));
+            checks.AddRange(CloudflareConfigChecks(config));
+        }
+        return await Task.FromResult(checks);
+    }
+
+    public async Task<EnvironmentDiagnostic> DiagnoseStartupAsync(HealthService health, CancellationToken cancellationToken = default)
+    {
+        var config = _configStore.Reload();
+        var pub = await health.CheckPublicAsync(cancellationToken);
+        if (pub.Ok)
+        {
+            return EnvironmentDiagnostic.Healthy("公网 MCP 可访问。");
+        }
+
+        var basic = await CheckBasicEnvironmentAsync();
+        var failedBasic = basic.FirstOrDefault(check => !check.Ok);
+        if (failedBasic is not null)
+        {
+            return EnvironmentDiagnostic.Unhealthy($"公网 MCP 不可访问；基础环境异常：{failedBasic.Name} - {failedBasic.Detail}");
+        }
+
+        var init = await CheckInitializationAsync();
+        var failedInit = init.FirstOrDefault(check => !check.Ok);
+        if (failedInit is not null)
+        {
+            return EnvironmentDiagnostic.Unhealthy($"公网 MCP 不可访问；初始化异常：{failedInit.Name} - {failedInit.Detail}");
+        }
+
+        var local = await health.CheckLocalAsync(cancellationToken);
+        if (!local.Ok)
+        {
+            return EnvironmentDiagnostic.Unhealthy($"公网 MCP 不可访问；本地 DevSpace 也不可访问：{local.Message}");
+        }
+
+        if (config.UseTemporaryCloudflareTunnel)
+        {
+            return EnvironmentDiagnostic.Healthy("临时 tunnel 模式已启用，本地 DevSpace 可访问。临时公网地址请查看 cloudflared 日志。");
+        }
+
+        return EnvironmentDiagnostic.Unhealthy($"公网 MCP 不可访问：{pub.Message}");
+    }
 
     public void InstallNvm() =>
         OpenPowerShellCommand("安装 nvm for Windows", "winget install --id CoreyButler.NVMforWindows -e --accept-package-agreements --accept-source-agreements");
@@ -54,7 +113,15 @@ internal sealed class EnvironmentService
     public void InstallSelectedNode()
     {
         var config = _configStore.Reload();
-        OpenPowerShellCommand($"安装并切换 Node {config.NodeVersion}", $"nvm install {config.NodeVersion}; nvm use {config.NodeVersion}");
+        OpenPowerShellCommand(
+            $"使用 nvm 安装 Node {config.NodeVersion}",
+            "$nvm = Get-Command nvm -ErrorAction SilentlyContinue" + Environment.NewLine +
+            "if ($null -eq $nvm) {" + Environment.NewLine +
+            "  Write-Host \"未找到 nvm。请先安装 nvm for Windows，安装后重启应用再继续。\" -ForegroundColor Yellow" + Environment.NewLine +
+            "} else {" + Environment.NewLine +
+            $"  nvm install {config.NodeVersion}" + Environment.NewLine +
+            $"  nvm use {config.NodeVersion}" + Environment.NewLine +
+            "}");
     }
 
     public void InstallDevSpace()
@@ -101,22 +168,6 @@ internal sealed class EnvironmentService
             Arguments = $"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
             UseShellExecute = true
         });
-    }
-
-    private static async Task<EnvironmentCheck> DotNetDesktopRuntimeCheck()
-    {
-        try
-        {
-            var output = await RunCaptureAsync("dotnet", "--list-runtimes");
-            var ok = output.Contains("Microsoft.WindowsDesktop.App 8.", StringComparison.OrdinalIgnoreCase);
-            return ok
-                ? new EnvironmentCheck(".NET Desktop Runtime 8", true, "已安装")
-                : new EnvironmentCheck(".NET Desktop Runtime 8", false, "未找到 Microsoft.WindowsDesktop.App 8.x");
-        }
-        catch (Exception ex)
-        {
-            return new EnvironmentCheck(".NET Desktop Runtime 8", false, ex.Message);
-        }
     }
 
     private static EnvironmentCheck FileCheck(string name, string path) =>
@@ -677,3 +728,10 @@ internal sealed class EnvironmentService
 }
 
 internal sealed record EnvironmentCheck(string Name, bool Ok, string Detail);
+
+internal sealed record EnvironmentDiagnostic(bool Ok, string Message)
+{
+    public static EnvironmentDiagnostic Healthy(string message) => new(true, message);
+
+    public static EnvironmentDiagnostic Unhealthy(string message) => new(false, message);
+}

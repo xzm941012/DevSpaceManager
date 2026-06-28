@@ -27,6 +27,7 @@ internal sealed class ManagerConfig
     public bool AutoStartDevSpace { get; set; } = true;
     public bool AutoStartTunnel { get; set; } = true;
     public bool CheckUpdates { get; set; } = true;
+    public bool UseTemporaryCloudflareTunnel { get; set; }
     public string DevSpaceLogLevel { get; set; } = "info";
     public string DevSpaceLogFormat { get; set; } = "json";
     public string DevSpaceToolMode { get; set; } = "minimal";

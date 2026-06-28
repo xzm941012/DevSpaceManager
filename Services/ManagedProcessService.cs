@@ -115,6 +115,20 @@ internal sealed class ManagedProcessService : IDisposable
     {
         var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
         EnsureFile(cloudflaredPath, "cloudflared");
+        if (config.UseTemporaryCloudflareTunnel)
+        {
+            var temporaryPort = config.RequestProxyEnabled ? config.RequestProxyPort : config.DevSpacePort;
+            var temporaryArgs = $"tunnel --url http://localhost:{temporaryPort}";
+            AppendLine(config.TunnelStdoutLog, $"临时 tunnel 模式已启用。公网地址会由 cloudflared 输出，通常是 https://*.trycloudflare.com；每次启动都会变化。");
+            var temporaryStart = CommandProcess.Create(cloudflaredPath, temporaryArgs);
+            temporaryStart.UseShellExecute = false;
+            temporaryStart.CreateNoWindow = true;
+            temporaryStart.WorkingDirectory = AppPaths.UserProfile;
+            temporaryStart.RedirectStandardOutput = true;
+            temporaryStart.RedirectStandardError = true;
+            return StartWithLogs(temporaryStart, config.TunnelStdoutLog, config.TunnelStderrLog);
+        }
+
         var args = "tunnel";
         if (string.Equals(config.CloudflaredProtocol, "http2", StringComparison.OrdinalIgnoreCase))
         {
