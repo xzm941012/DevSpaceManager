@@ -28,12 +28,16 @@ internal sealed class ManagerConfig
     public bool AutoRestart { get; set; } = true;
     public bool AutoStartDevSpace { get; set; } = true;
     public bool AutoStartTunnel { get; set; } = true;
+    public bool StartWithWindows { get; set; }
+    public bool StartMinimizedToTray { get; set; }
     public bool CheckUpdates { get; set; } = true;
     public bool UseTemporaryCloudflareTunnel { get; set; }
-    public string DevSpaceLogLevel { get; set; } = "info";
+    public string DevSpaceLogLevel { get; set; } = "warn";
     public string DevSpaceLogFormat { get; set; } = "json";
     public string DevSpaceToolMode { get; set; } = "minimal";
-    public string DevSpaceWidgets { get; set; } = "full";
+    public string DevSpaceWidgets { get; set; } = "off";
+    public bool DevSpaceLogToolCalls { get; set; }
+    public bool DevSpaceLogRequests { get; set; }
     public bool DevSpaceSkills { get; set; } = true;
     public string DevSpaceAgentDir { get; set; } = "";
     public string DevSpaceSkillPaths { get; set; } = "";
@@ -41,6 +45,7 @@ internal sealed class ManagerConfig
     public List<BrowserProfileConfig> BrowserProfiles { get; set; } = [];
     public bool LocalDebugEnabled { get; set; }
     public int LocalDebugPort { get; set; } = 9223;
+    public List<MountedMcpConfig> MountedMcps { get; set; } = [];
 
     [JsonIgnore]
     public string DevSpaceStdoutLog => Path.Combine(AppPaths.LogDirectory, "devspace.out.log");
@@ -56,4 +61,10 @@ internal sealed class ManagerConfig
 
     [JsonIgnore]
     public string McpUrl => $"{PublicBaseUrl.TrimEnd('/')}/mcp";
+}
+
+internal sealed class MountedMcpConfig
+{
+    public string Name { get; set; } = "";
+    public bool Enabled { get; set; }
 }

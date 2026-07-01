@@ -4,6 +4,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -15,9 +16,12 @@ public sealed partial class MainWindow
     private const double LoadingGlowCycleMs = 2400;
     private const double LoadingGlowInitialPhaseMs = 900;
     private const string ChromiumErrorPagePrefix = "chrome-error://chromewebdata/";
+    private const double StartupWorkAreaMargin = 16;
     private static readonly TimeSpan InitialAnimationLeadTime = TimeSpan.FromMilliseconds(650);
+    private static readonly TimeSpan EnvironmentServiceStartupGrace = TimeSpan.FromSeconds(90);
 
     private readonly AppHost _app;
+    private readonly Action? _showUpdateWindow;
     private SettingsWindow? _settingsWindow;
     private EnvironmentSetupWindow? _environmentSetupWindow;
     private WebView2? _chatGptView;
@@ -29,10 +33,12 @@ public sealed partial class MainWindow
     private readonly DispatcherTimer _environmentDiagnosticTimer = new();
     private readonly Stopwatch _loadingGlowClock = new();
     private TaskCompletionSource? _initialLoadCompletion;
+    private DateTimeOffset _environmentStartupGraceUntil = DateTimeOffset.Now.Add(EnvironmentServiceStartupGrace);
 
-    internal MainWindow(AppHost app)
+    internal MainWindow(AppHost app, Action? showUpdateWindow = null)
     {
         _app = app;
+        _showUpdateWindow = showUpdateWindow;
         InitializeComponent();
         ChatGptHost.Visibility = System.Windows.Visibility.Collapsed;
         ChatGptLoadingOverlay.Visibility = System.Windows.Visibility.Visible;
@@ -45,36 +51,113 @@ public sealed partial class MainWindow
         _environmentDiagnosticTimer.Tick += async (_, _) => await RefreshEnvironmentDiagnosticAsync();
         ContentRendered += async (_, _) => await BeginInitialLoadAsync();
         Loaded += async (_, _) => await InitializeEnvironmentExperienceAsync();
-        SourceInitialized += (_, _) => ApplyWindowDwmAttributes();
+        Loaded += (_, _) => FitWindowToCurrentWorkArea();
+        SourceInitialized += (_, _) =>
+        {
+            ApplyWindowDwmAttributes();
+            RegisterWindowSizingHook();
+            FitWindowToCurrentWorkArea();
+        };
     }
 
     private async Task InitializeEnvironmentExperienceAsync()
     {
-        await RefreshEnvironmentDiagnosticAsync();
+        await RefreshEnvironmentDiagnosticAsync(allowStartupGrace: true);
+        QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(8), allowStartupGrace: true);
+        QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(20), allowStartupGrace: true);
+        QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(40), allowStartupGrace: true);
+        QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(70), allowStartupGrace: true);
+        QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(100));
         _environmentDiagnosticTimer.Start();
     }
 
-    private async Task RefreshEnvironmentDiagnosticAsync()
+    internal void QueueEnvironmentDiagnosticRefresh(TimeSpan delay, bool allowStartupGrace = false)
+    {
+        _ = RefreshEnvironmentDiagnosticAfterDelayAsync(delay, allowStartupGrace);
+    }
+
+    private async Task RefreshEnvironmentDiagnosticAfterDelayAsync(TimeSpan delay, bool allowStartupGrace)
+    {
+        if (delay > TimeSpan.Zero)
+        {
+            await Task.Delay(delay);
+        }
+
+        await RefreshEnvironmentDiagnosticAsync(allowStartupGrace);
+    }
+
+    internal async Task RefreshEnvironmentDiagnosticAsync(bool allowStartupGrace = false)
     {
         try
         {
-            var diagnostic = await _app.Environment.DiagnoseStartupAsync(_app.Health);
-            Dispatcher.Invoke(() =>
+            if (allowStartupGrace && DateTimeOffset.Now < _environmentStartupGraceUntil)
             {
-                EnvironmentWarningButton.Visibility = diagnostic.Ok
-                    ? System.Windows.Visibility.Collapsed
-                    : System.Windows.Visibility.Visible;
-                EnvironmentWarningToolTipText.Text = ShortEnvironmentTip(diagnostic.Message);
-            });
+                var immediate = await DiagnoseImmediateEnvironmentIssueAsync();
+                if (!immediate.Ok)
+                {
+                    ShowEnvironmentDiagnostic(immediate);
+                    return;
+                }
+
+                var config = _app.ConfigStore.Reload();
+                var local = await _app.Health.CheckLocalAsync();
+                var publicHealth = await _app.Health.CheckPublicAsync();
+                var waitingForDevSpace = config.AutoStartDevSpace && !local.Ok;
+                var waitingForTunnel = config.AutoStartTunnel &&
+                                       !config.UseTemporaryCloudflareTunnel &&
+                                       !publicHealth.Ok;
+                if (waitingForDevSpace || waitingForTunnel)
+                {
+                    HideEnvironmentWarning("正在启动并检测服务");
+                    return;
+                }
+            }
+
+            var diagnostic = await _app.Environment.DiagnoseStartupAsync(_app.Health);
+            ShowEnvironmentDiagnostic(diagnostic);
         }
         catch (Exception ex)
         {
-            Dispatcher.Invoke(() =>
-            {
-                EnvironmentWarningButton.Visibility = System.Windows.Visibility.Visible;
-                EnvironmentWarningToolTipText.Text = ShortEnvironmentTip($"环境检查失败：{ex.Message}");
-            });
+            ShowEnvironmentDiagnostic(EnvironmentDiagnostic.Unhealthy($"环境检查失败：{ex.Message}"));
         }
+    }
+
+    private async Task<EnvironmentDiagnostic> DiagnoseImmediateEnvironmentIssueAsync()
+    {
+        var basic = await _app.Environment.CheckBasicEnvironmentAsync();
+        var failedBasic = basic.FirstOrDefault(check => !check.Ok);
+        if (failedBasic is not null)
+        {
+            return EnvironmentDiagnostic.Unhealthy($"基础环境异常：{failedBasic.Name} - {failedBasic.Detail}");
+        }
+
+        var init = await _app.Environment.CheckInitializationAsync();
+        var failedInit = init.FirstOrDefault(check => !check.Ok);
+        return failedInit is null
+            ? EnvironmentDiagnostic.Healthy("基础环境和初始化配置已就绪。")
+            : EnvironmentDiagnostic.Unhealthy($"初始化异常：{failedInit.Name} - {failedInit.Detail}");
+    }
+
+    private void ShowEnvironmentDiagnostic(EnvironmentDiagnostic diagnostic)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            EnvironmentWarningButton.Visibility = diagnostic.Ok
+                ? System.Windows.Visibility.Collapsed
+                : System.Windows.Visibility.Visible;
+            EnvironmentWarningToolTipText.Text = diagnostic.Ok
+                ? "环境已就绪"
+                : ShortEnvironmentTip(diagnostic.Message);
+        });
+    }
+
+    private void HideEnvironmentWarning(string message)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            EnvironmentWarningButton.Visibility = System.Windows.Visibility.Collapsed;
+            EnvironmentWarningToolTipText.Text = message;
+        });
     }
 
     private static string ShortEnvironmentTip(string message)
@@ -109,7 +192,7 @@ public sealed partial class MainWindow
         await ReloadChatGptViewAsync();
     }
 
-    private async Task ReloadChatGptViewAsync()
+    internal async Task ReloadChatGptViewAsync()
     {
         if (_isInitialChatGptLoad)
         {
@@ -415,6 +498,24 @@ public sealed partial class MainWindow
         ShowEnvironmentSetup(orderedMode: false);
     }
 
+    internal void SetUpdateAvailable(bool hasUpdate, string? message = null)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            UpdateAvailableButton.Visibility = hasUpdate
+                ? System.Windows.Visibility.Visible
+                : System.Windows.Visibility.Collapsed;
+            UpdateAvailableToolTipText.Text = string.IsNullOrWhiteSpace(message)
+                ? "点击打开检查更新"
+                : message;
+        });
+    }
+
+    private void UpdateAvailableButton_OnClick(object sender, System.Windows.RoutedEventArgs e)
+    {
+        _showUpdateWindow?.Invoke();
+    }
+
     private void SettingsMenuItem_OnClick(object sender, System.Windows.RoutedEventArgs e)
     {
         if (_settingsWindow is null)
@@ -574,6 +675,7 @@ public sealed partial class MainWindow
     protected override void OnClosed(EventArgs e)
     {
         _environmentDiagnosticTimer.Stop();
+        ResetChatGptView();
         _settingsWindow?.ForceClose();
         _settingsWindow = null;
         _environmentSetupWindow?.Close();
@@ -606,6 +708,132 @@ public sealed partial class MainWindow
         _ = DwmSetWindowAttribute(handle, 2, ref ncrpEnabled, sizeof(int));
     }
 
+    private void RegisterWindowSizingHook()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero) return;
+
+        HwndSource.FromHwnd(handle)?.AddHook(WindowMessageHook);
+    }
+
+    private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int wmGetMinMaxInfo = 0x0024;
+        if (message == wmGetMinMaxInfo)
+        {
+            ApplyMonitorWorkAreaMaxSize(hwnd, lParam);
+            handled = true;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void FitWindowToCurrentWorkArea()
+    {
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var source = PresentationSource.FromVisual(this);
+        if (source?.CompositionTarget is null)
+        {
+            return;
+        }
+
+        var screen = System.Windows.Forms.Screen.FromHandle(handle);
+        var fromDevice = source.CompositionTarget.TransformFromDevice;
+        var topLeft = fromDevice.Transform(new System.Windows.Point(screen.WorkingArea.Left, screen.WorkingArea.Top));
+        var bottomRight = fromDevice.Transform(new System.Windows.Point(screen.WorkingArea.Right, screen.WorkingArea.Bottom));
+        var workWidth = bottomRight.X - topLeft.X;
+        var workHeight = bottomRight.Y - topLeft.Y;
+
+        var maxWidth = Math.Max(520, workWidth - StartupWorkAreaMargin * 2);
+        var maxHeight = Math.Max(420, workHeight - StartupWorkAreaMargin * 2);
+        MinWidth = Math.Min(MinWidth, maxWidth);
+        MinHeight = Math.Min(MinHeight, maxHeight);
+        Width = Math.Min(Width, maxWidth);
+        Height = Math.Min(Height, maxHeight);
+        Left = topLeft.X + Math.Max(StartupWorkAreaMargin, (workWidth - Width) / 2);
+        Top = topLeft.Y + Math.Max(StartupWorkAreaMargin, (workHeight - Height) / 2);
+    }
+
+    private static void ApplyMonitorWorkAreaMaxSize(IntPtr hwnd, IntPtr lParam)
+    {
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        if (monitor == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var monitorInfo = new MonitorInfo();
+        monitorInfo.Size = Marshal.SizeOf<MonitorInfo>();
+        if (!GetMonitorInfo(monitor, ref monitorInfo))
+        {
+            return;
+        }
+
+        var minMaxInfo = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        var workArea = monitorInfo.WorkArea;
+        var monitorArea = monitorInfo.Monitor;
+        minMaxInfo.MaxPosition.X = workArea.Left - monitorArea.Left;
+        minMaxInfo.MaxPosition.Y = workArea.Top - monitorArea.Top;
+        minMaxInfo.MaxSize.X = workArea.Right - workArea.Left;
+        minMaxInfo.MaxSize.Y = workArea.Bottom - workArea.Top;
+        minMaxInfo.MaxTrackSize.X = minMaxInfo.MaxSize.X;
+        minMaxInfo.MaxTrackSize.Y = minMaxInfo.MaxSize.Y;
+        Marshal.StructureToPtr(minMaxInfo, lParam, true);
+    }
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int pvAttribute, int cbAttribute);
+
+    private const int MonitorDefaultToNearest = 2;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo monitorInfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public Point Reserved;
+        public Point MaxSize;
+        public Point MaxPosition;
+        public Point MinTrackSize;
+        public Point MaxTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public Rect Monitor;
+        public Rect WorkArea;
+        public int Flags;
+    }
 }

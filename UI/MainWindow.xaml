@@ -375,6 +375,66 @@
                                   Data="M12 8v5 M12 17h.01" />
                         </Grid>
                     </Button>
+                    <Button x:Name="UpdateAvailableButton"
+                            Click="UpdateAvailableButton_OnClick"
+                            Width="26"
+                            Height="26"
+                            Margin="0,0,12,0"
+                            Foreground="#FFFFFF"
+                            Visibility="Collapsed"
+                            ToolTipService.InitialShowDelay="0"
+                            ToolTipService.BetweenShowDelay="0"
+                            ToolTipService.ShowDuration="6000"
+                            Style="{StaticResource ChromeButtonStyle}">
+                        <Button.ToolTip>
+                            <ToolTip Style="{StaticResource ChromeToolTipStyle}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Grid Width="14" Height="14" Margin="0,1,7,0">
+                                        <Ellipse Fill="#22A06B" />
+                                        <Path Width="8"
+                                              Height="8"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Stroke="#FFFFFF"
+                                              StrokeThickness="1.7"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              StrokeLineJoin="Round"
+                                              Fill="Transparent"
+                                              Stretch="Uniform"
+                                              Data="M12 19V5 M5 12l7-7 7 7" />
+                                    </Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="发现可用更新"
+                                                   Foreground="#20201D"
+                                                   FontSize="12.5"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock x:Name="UpdateAvailableToolTipText"
+                                                   Text="点击打开检查更新"
+                                                   Margin="0,2,0,0"
+                                                   Foreground="#6F6F68"
+                                                   FontSize="11.5"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </ToolTip>
+                        </Button.ToolTip>
+                        <Grid Width="14" Height="14">
+                            <Ellipse Fill="#22A06B" />
+                            <Path Width="8"
+                                  Height="8"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"
+                                  Stroke="#FFFFFF"
+                                  StrokeThickness="1.7"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Fill="Transparent"
+                                  Stretch="Uniform"
+                                  Data="M12 19V5 M5 12l7-7 7 7" />
+                        </Grid>
+                    </Button>
                     <Menu Background="Transparent"
                           BorderThickness="0"
                           VerticalAlignment="Center"

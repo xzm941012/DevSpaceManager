@@ -7,6 +7,7 @@ internal sealed class AppHost : IDisposable
     public ManagerConfigStore ConfigStore { get; }
     public ManagedProcessService Processes { get; }
     public McpRequestMonitor RequestMonitor { get; }
+    public MountedMcpService MountedMcps { get; }
     public McpProxyService McpProxy { get; }
     public PublicEndpointSyncService PublicEndpoints { get; }
     public HealthService Health { get; }
@@ -21,7 +22,8 @@ internal sealed class AppHost : IDisposable
     {
         ConfigStore = new ManagerConfigStore();
         RequestMonitor = new McpRequestMonitor();
-        McpProxy = new McpProxyService(ConfigStore, RequestMonitor);
+        MountedMcps = new MountedMcpService(ConfigStore);
+        McpProxy = new McpProxyService(ConfigStore, RequestMonitor, MountedMcps);
         PublicEndpoints = new PublicEndpointSyncService(ConfigStore);
         Health = new HealthService(ConfigStore);
         Processes = new ManagedProcessService(ConfigStore, McpProxy, PublicEndpoints, Health);
@@ -39,5 +41,6 @@ internal sealed class AppHost : IDisposable
     {
         Processes.Dispose();
         McpProxy.Dispose();
+        MountedMcps.Dispose();
     }
 }

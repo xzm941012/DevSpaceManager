@@ -7,21 +7,36 @@ namespace DevSpaceManager.UI;
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
+    private const int TrayMenuWidth = 206;
+    private const int TraySubmenuWidth = 254;
+    private const int TrayMenuItemHeight = 32;
+
     private readonly AppHost _app;
+    private readonly bool _startMinimized;
     private readonly NotifyIcon _tray;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _startupTimer;
     private readonly Control _dispatcher = new();
     private readonly CancellationTokenSource _backgroundWorkerCts = new();
     private MainWindow? _mainWindow;
+    private SettingsWindow? _settingsWindow;
+    private EnvironmentSetupWindow? _environmentSetupWindow;
+    private UpdateWindow? _updateWindow;
+    private ToolStripMenuItem? _devSpaceStatusItem;
+    private ToolStripMenuItem? _tunnelStatusItem;
     private bool _refreshing;
     private bool _healthy;
     private bool _exiting;
+    private bool _disposed;
+    private bool _closingForLightweightMode;
+    private bool _hasAvailableUpdate;
+    private string _availableUpdateMessage = "";
     private DateTimeOffset _lastBackgroundUpdateCheck = DateTimeOffset.MinValue;
 
-    public TrayApplicationContext(AppHost app)
+    public TrayApplicationContext(AppHost app, bool startMinimized)
     {
         _app = app;
+        _startMinimized = startMinimized;
         _dispatcher.CreateControl();
         _tray = new NotifyIcon
         {
@@ -34,10 +49,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (e.Button == MouseButtons.Left)
             {
-                ShowSettings();
+                ShowMainWindow();
             }
         };
-        _tray.DoubleClick += (_, _) => ShowSettings();
+        _tray.DoubleClick += (_, _) => ShowMainWindow();
 
         _timer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _timer.Tick += async (_, _) =>
@@ -51,7 +66,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _startupTimer.Tick += (_, _) =>
         {
             _startupTimer.Stop();
-            ShowSettings();
+            if (!_startMinimized)
+            {
+                ShowMainWindow();
+            }
             _ = StartBackgroundServicesAsync();
         };
         _startupTimer.Start();
@@ -70,18 +88,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ContextMenuStrip BuildMenu()
     {
         var menu = CreateTrayMenu();
+        AddTrayMenuItem(menu, "打开 ChatGPT", (_, _) => ShowMainWindow());
+        AddTrayMenuItem(menu, "轻量模式", (_, _) => EnterLightweightMode());
+        AddTraySeparator(menu);
+        AddServiceSubmenu(menu, "DevSpace", ProcessRole.DevSpace);
+        AddServiceSubmenu(menu, "Cloudflare Tunnel", ProcessRole.CloudflareTunnel);
+        AddTraySeparator(menu);
         AddTrayMenuItem(menu, "启动全部", async (_, _) => await RunProcessActionAsync("启动全部", token => _app.Processes.StartAllAsync(token)));
         AddTrayMenuItem(menu, "停止全部", async (_, _) => await RunProcessActionAsync("停止全部", _app.Processes.StopAll));
         AddTrayMenuItem(menu, "重启全部", async (_, _) => await RunProcessActionAsync("重启全部", token => _app.Processes.RestartAllAsync(token)));
         AddTraySeparator(menu);
-        AddTrayMenuItem(menu, "启动 DevSpace", async (_, _) => await RunProcessActionAsync("启动 DevSpace", () => _app.Processes.Start(ProcessRole.DevSpace)));
-        AddTrayMenuItem(menu, "重启 DevSpace", async (_, _) => await RunProcessActionAsync("重启 DevSpace", () => _app.Processes.Restart(ProcessRole.DevSpace)));
-        AddTrayMenuItem(menu, "启动隧道", async (_, _) => await RunProcessActionAsync("启动隧道", token => _app.Processes.StartAsync(ProcessRole.CloudflareTunnel, token)));
-        AddTrayMenuItem(menu, "重启隧道", async (_, _) => await RunProcessActionAsync("重启隧道", token => _app.Processes.RestartAsync(ProcessRole.CloudflareTunnel, token)));
-        AddTraySeparator(menu);
-        AddTrayMenuItem(menu, "检查更新", async (_, _) => await CheckUpdatesAsync());
+        AddTrayMenuItem(menu, "检查更新", (_, _) => ShowUpdateWindow());
         AddTrayMenuItem(menu, "打开日志", (_, _) => OpenFolder(AppPaths.LogDirectory));
-        AddTrayMenuItem(menu, "设置", (_, _) => ShowSettings());
+        AddTrayMenuItem(menu, "设置", (_, _) => ShowSettingsWindow());
+        AddTrayMenuItem(menu, "环境诊断", (_, _) => ShowEnvironmentSetupWindow(orderedMode: false));
         AddTraySeparator(menu);
         AddTrayMenuItem(menu, "退出", (_, _) =>
         {
@@ -89,6 +109,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ExitThread();
         }, danger: true);
         return menu;
+    }
+
+    private void AddServiceSubmenu(ContextMenuStrip menu, string text, ProcessRole role)
+    {
+        var submenu = AddTrayMenuItem(menu, text, (_, _) => { });
+        ConfigureTrayDropDown(submenu, TraySubmenuWidth);
+        var status = AddTraySubmenuItem(submenu, "当前状态：检测中", (_, _) => { });
+        status.Enabled = false;
+        AddTraySubmenuSeparator(submenu);
+        AddTraySubmenuItem(submenu, "启动", async (_, _) => await RunProcessActionAsync($"启动{text}", token => StartRoleAsync(role, token)));
+        AddTraySubmenuItem(submenu, "停止", async (_, _) => await RunProcessActionAsync($"停止{text}", () => _app.Processes.Stop(role)));
+        AddTraySubmenuItem(submenu, "重启", async (_, _) => await RunProcessActionAsync($"重启{text}", token => RestartRoleAsync(role, token)));
+
+        if (role == ProcessRole.DevSpace)
+        {
+            _devSpaceStatusItem = status;
+        }
+        else
+        {
+            _tunnelStatusItem = status;
+        }
     }
 
     private static ContextMenuStrip CreateTrayMenu()
@@ -106,6 +147,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowCheckMargin = false,
             ShowImageMargin = false
         };
+        menu.MinimumSize = new Size(TrayMenuWidth + menu.Padding.Horizontal, 0);
         menu.Opened += (_, _) => ApplyRoundedMenuRegion(menu);
         menu.SizeChanged += (_, _) => ApplyRoundedMenuRegion(menu);
         menu.Closed += (_, _) =>
@@ -115,6 +157,47 @@ internal sealed class TrayApplicationContext : ApplicationContext
             oldRegion?.Dispose();
         };
         return menu;
+    }
+
+    private static void ConfigureTrayDropDown(ToolStripMenuItem item, int itemWidth)
+    {
+        var dropDown = new ContextMenuStrip
+        {
+            AutoSize = true,
+            BackColor = TrayMenuColors.Surface,
+            DropShadowEnabled = true,
+            Font = item.Owner?.Font ?? new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
+            ForeColor = TrayMenuColors.Text,
+            Padding = new Padding(6),
+            Renderer = new TrayMenuRenderer(),
+            ShowCheckMargin = false,
+            ShowImageMargin = false
+        };
+        dropDown.MinimumSize = new Size(itemWidth + dropDown.Padding.Horizontal, 0);
+        dropDown.Opened += (_, _) => ApplyRoundedMenuRegion(dropDown);
+        dropDown.SizeChanged += (_, _) => ApplyRoundedMenuRegion(dropDown);
+        dropDown.Closed += (_, _) =>
+        {
+            var oldRegion = dropDown.Region;
+            dropDown.Region = null;
+            oldRegion?.Dispose();
+        };
+        item.DropDown = dropDown;
+        item.DropDownOpening += (_, _) =>
+        {
+            AlignDropDownToOwnerRightEdge(item);
+        };
+    }
+
+    private static void AlignDropDownToOwnerRightEdge(ToolStripMenuItem item)
+    {
+        if (item.Owner is not ToolStrip owner || !owner.Visible)
+        {
+            return;
+        }
+
+        var location = owner.PointToScreen(new Point(owner.Width - 1, item.Bounds.Top));
+        item.DropDown.Location = location;
     }
 
     private static ToolStripMenuItem AddTrayMenuItem(
@@ -131,11 +214,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ForeColor = danger ? TrayMenuColors.DangerText : TrayMenuColors.Text,
             Margin = Padding.Empty,
             Padding = new Padding(12, 0, 12, 0),
-            Size = new Size(176, 32),
+            Size = new Size(TrayMenuWidth, TrayMenuItemHeight),
             TextAlign = ContentAlignment.MiddleLeft
         };
         item.AccessibleName = text;
         menu.Items.Add(item);
+        return item;
+    }
+
+    private static ToolStripMenuItem AddTraySubmenuItem(
+        ToolStripMenuItem parent,
+        string text,
+        EventHandler onClick)
+    {
+        var item = new ToolStripMenuItem(text, null, onClick)
+        {
+            AutoSize = false,
+            BackColor = TrayMenuColors.Surface,
+            DisplayStyle = ToolStripItemDisplayStyle.Text,
+            ForeColor = TrayMenuColors.Text,
+            Margin = Padding.Empty,
+            Padding = new Padding(12, 0, 12, 0),
+            Size = new Size(TraySubmenuWidth, TrayMenuItemHeight),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        parent.DropDownItems.Add(item);
         return item;
     }
 
@@ -145,7 +248,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             AutoSize = false,
             Margin = new Padding(6, 4, 6, 4),
-            Size = new Size(164, 1)
+            Size = new Size(TrayMenuWidth - 12, 1)
+        });
+    }
+
+    private static void AddTraySubmenuSeparator(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Add(new ToolStripSeparator
+        {
+            AutoSize = false,
+            Margin = new Padding(6, 4, 6, 4),
+            Size = new Size(TraySubmenuWidth - 12, 1)
         });
     }
 
@@ -186,6 +299,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var pub = await _app.Health.CheckPublicAsync();
             devspaceRunning = devspaceRunning || local.Ok;
             tunnelRunning = tunnelRunning || pub.Ok;
+            UpdateServiceStatusMenu(devspaceRunning, tunnelRunning);
             var ok = devspaceRunning && tunnelRunning && local.Ok && pub.Ok;
             _tray.Text = ok
                 ? "DevSpace 管理器 - 运行正常"
@@ -201,6 +315,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch
         {
             _healthy = false;
+            UpdateServiceStatusMenu(false, false);
             var oldIcon = _tray.Icon;
             _tray.Icon = NotifyIconFactory.Create(false);
             oldIcon?.Dispose();
@@ -212,42 +327,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task CheckUpdatesAsync()
+    private void UpdateServiceStatusMenu(bool devspaceRunning, bool tunnelRunning)
     {
-        try
+        if (_devSpaceStatusItem is not null)
         {
-            var update = await _app.Updates.CheckDevSpaceAsync();
-            if (!update.HasUpdate)
-            {
-                MessageBox.Show(update.Notes, "DevSpace 管理器", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            
-            var result = MessageBox.Show(
-                $"{update.Notes}{Environment.NewLine}{Environment.NewLine}现在更新吗？",
-                "发现 DevSpace 新版本",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Information);
-            if (result != DialogResult.Yes) return;
-
-            var progress = new Progress<string>(message => Log.Update(message));
-            await _app.Updates.UpdateDevSpaceAsync(progress);
-            var config = _app.ConfigStore.Reload();
-            config.LastNotifiedUpdateVersion = update.LatestVersion;
-            _app.ConfigStore.Save(config);
-            var restart = MessageBox.Show(
-                "更新完成。现在重启 DevSpace 吗？",
-                "DevSpace 管理器",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-            if (restart == DialogResult.Yes)
-            {
-                _app.Processes.Start(ProcessRole.DevSpace);
-            }
+            _devSpaceStatusItem.Text = $"当前状态：{State(devspaceRunning)}";
         }
-        catch (Exception ex)
+
+        if (_tunnelStatusItem is not null)
         {
-            MessageBox.Show(ex.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _tunnelStatusItem.Text = $"当前状态：{State(tunnelRunning)}";
         }
     }
 
@@ -256,26 +345,64 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var config = _app.ConfigStore.Reload();
-            if (!config.CheckUpdates) return;
+            if (!config.CheckUpdates)
+            {
+                ApplyAvailableUpdateStatus(new AvailableUpdateStatus(false, "", ""));
+                return;
+            }
             if (DateTimeOffset.Now - _lastBackgroundUpdateCheck < TimeSpan.FromHours(config.UpdateCheckHours)) return;
 
             _lastBackgroundUpdateCheck = DateTimeOffset.Now;
-            var update = await _app.Updates.CheckDevSpaceAsync();
-            if (!update.HasUpdate) return;
-            if (string.Equals(config.LastNotifiedUpdateVersion, update.LatestVersion, StringComparison.OrdinalIgnoreCase)) return;
+            var status = await CheckUpdateStatusAsync();
+            ApplyAvailableUpdateStatus(status);
+            if (!status.HasUpdate) return;
+            if (string.Equals(config.LastNotifiedUpdateVersion, status.NotificationVersion, StringComparison.OrdinalIgnoreCase)) return;
 
-            config.LastNotifiedUpdateVersion = update.LatestVersion;
+            config.LastNotifiedUpdateVersion = status.NotificationVersion;
             _app.ConfigStore.Save(config);
             _tray.ShowBalloonTip(
                 5000,
-                "发现 DevSpace 新版本",
-                $"{update.CurrentVersion} -> {update.LatestVersion}{Environment.NewLine}可在托盘菜单或设置页执行更新。",
+                "发现可用更新",
+                $"{status.BalloonMessage}{Environment.NewLine}可在托盘菜单或主窗口执行更新。",
                 ToolTipIcon.Info);
         }
         catch (Exception ex)
         {
             Log.Update($"后台检查更新失败：{ex.Message}");
         }
+    }
+
+    private async Task<AvailableUpdateStatus> CheckUpdateStatusAsync()
+    {
+        var devSpaceTask = _app.Updates.CheckDevSpaceAsync();
+        var cloudflaredTask = _app.Updates.CheckCloudflaredAsync();
+        await Task.WhenAll(devSpaceTask, cloudflaredTask);
+
+        var devSpace = await devSpaceTask;
+        var cloudflared = await cloudflaredTask;
+        var available = new List<string>();
+        if (devSpace.HasUpdate)
+        {
+            available.Add($"DevSpace {devSpace.CurrentVersion} -> {devSpace.LatestVersion}");
+        }
+
+        if (cloudflared.HasUpdate)
+        {
+            available.Add($"cloudflared {cloudflared.CurrentVersion} -> {cloudflared.LatestVersion}");
+        }
+
+        var message = available.Count == 0
+            ? ""
+            : string.Join("；", available);
+        var notificationVersion = string.Join("|", available);
+        return new AvailableUpdateStatus(available.Count > 0, message, notificationVersion);
+    }
+
+    private void ApplyAvailableUpdateStatus(AvailableUpdateStatus status)
+    {
+        _hasAvailableUpdate = status.HasUpdate;
+        _availableUpdateMessage = status.ToolTipMessage;
+        _mainWindow?.SetUpdateAvailable(status.HasUpdate, status.ToolTipMessage);
     }
 
     private async Task RunProcessActionAsync(string actionName, Action action)
@@ -295,6 +422,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             await action(CancellationToken.None);
             await Task.Delay(1200);
             await RefreshStatusAsync();
+            RefreshMainWindowEnvironmentSoon();
             _tray.ShowBalloonTip(2500, "DevSpace 管理器", $"{actionName}已执行。", ToolTipIcon.Info);
         }
         catch (Exception ex)
@@ -302,6 +430,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _tray.ShowBalloonTip(4000, "操作失败", ex.Message, ToolTipIcon.Error);
             MessageBox.Show(ex.Message, "DevSpace 管理器", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void RefreshMainWindowEnvironmentSoon()
+    {
+        if (_mainWindow is null)
+        {
+            return;
+        }
+
+        _ = _mainWindow.RefreshEnvironmentDiagnosticAsync(allowStartupGrace: true);
+        _mainWindow.QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(4), allowStartupGrace: true);
+        _mainWindow.QueueEnvironmentDiagnosticRefresh(TimeSpan.FromSeconds(10));
     }
 
     private async Task InitializeServicesAsync()
@@ -320,7 +460,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 "需要初始化",
                 "缺少部分运行环境或配置，请先完成设置。",
                 ToolTipIcon.Warning);
-            ShowSettings();
+            ShowEnvironmentSetupWindow(orderedMode: false);
         }
         catch (Exception ex)
         {
@@ -334,30 +474,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (_dispatcher.IsDisposed) return;
         if (_dispatcher.InvokeRequired)
         {
-            _dispatcher.BeginInvoke(ShowSettings);
+            _dispatcher.BeginInvoke(ShowMainWindow);
             return;
         }
 
-        ShowSettings();
+        ShowMainWindow();
     }
 
-    private void ShowSettings()
+    private void ShowMainWindow()
     {
         try
         {
-            Log.App("ShowSettings requested.");
+            Log.App("ShowMainWindow requested.");
             if (_mainWindow is null)
             {
-                _mainWindow = new MainWindow(_app);
+                _mainWindow = new MainWindow(_app, ShowUpdateWindow);
                 _mainWindow.Closing += (_, args) =>
                 {
-                    if (!_exiting)
+                    if (!_exiting && !_closingForLightweightMode)
                     {
                         args.Cancel = true;
                         _mainWindow.Hide();
                     }
                 };
                 _mainWindow.Closed += (_, _) => _mainWindow = null;
+                _mainWindow.SetUpdateAvailable(_hasAvailableUpdate, _availableUpdateMessage);
                 Log.App("Main window created.");
             }
 
@@ -381,7 +522,120 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             Log.App(ex.ToString());
+            MessageBox.Show(ex.Message, "打开 ChatGPT 失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowSettingsWindow()
+    {
+        try
+        {
+            if (_settingsWindow is null || !_settingsWindow.IsLoaded)
+            {
+                Func<Task>? reloadChatGptView = _mainWindow is null
+                    ? null
+                    : () => _mainWindow.ReloadChatGptViewAsync();
+                _settingsWindow = new SettingsWindow(_app, reloadChatGptView)
+                {
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen
+                };
+                _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+            }
+
+            _settingsWindow.Show();
+            _settingsWindow.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log.App(ex.ToString());
             MessageBox.Show(ex.Message, "打开设置失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowEnvironmentSetupWindow(bool orderedMode)
+    {
+        try
+        {
+            if (_environmentSetupWindow is null || !_environmentSetupWindow.IsLoaded)
+            {
+                _environmentSetupWindow = new EnvironmentSetupWindow(_app, orderedMode)
+                {
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen
+                };
+                _environmentSetupWindow.Closed += (_, _) => _environmentSetupWindow = null;
+            }
+
+            _environmentSetupWindow.Show();
+            _environmentSetupWindow.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log.App(ex.ToString());
+            MessageBox.Show(ex.Message, "打开环境诊断失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowUpdateWindow()
+    {
+        try
+        {
+            if (_updateWindow is null || !_updateWindow.IsLoaded)
+            {
+                _updateWindow = new UpdateWindow(_app)
+                {
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen
+                };
+                _updateWindow.UpdateStatusChanged += (_, status) =>
+                {
+                    ApplyAvailableUpdateStatus(new AvailableUpdateStatus(
+                        status.HasUpdate,
+                        status.ToolTipMessage,
+                        status.NotificationVersion));
+                };
+                _updateWindow.Closed += (_, _) => _updateWindow = null;
+            }
+
+            _updateWindow.Show();
+            _updateWindow.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log.App(ex.ToString());
+            MessageBox.Show(ex.Message, "打开检查更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void EnterLightweightMode()
+    {
+        try
+        {
+            _settingsWindow?.ForceClose();
+            _settingsWindow = null;
+            _environmentSetupWindow?.Close();
+            _environmentSetupWindow = null;
+            _updateWindow?.Close();
+            _updateWindow = null;
+
+            if (_mainWindow is not null)
+            {
+                _closingForLightweightMode = true;
+                try
+                {
+                    _mainWindow.Close();
+                    _mainWindow = null;
+                }
+                finally
+                {
+                    _closingForLightweightMode = false;
+                }
+            }
+
+            _tray.ShowBalloonTip(2500, "DevSpace 管理器", "已进入轻量模式，后端服务继续运行。", ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.App(ex.ToString());
+            MessageBox.Show(ex.Message, "进入轻量模式失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -409,17 +663,51 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private static string State(bool running) => running ? "已运行" : "未运行";
 
+    private Task StartRoleAsync(ProcessRole role, CancellationToken cancellationToken) =>
+        role == ProcessRole.CloudflareTunnel
+            ? _app.Processes.StartAsync(role, cancellationToken)
+            : Task.Run(() => _app.Processes.Start(role), cancellationToken);
+
+    private Task RestartRoleAsync(ProcessRole role, CancellationToken cancellationToken) =>
+        role == ProcessRole.CloudflareTunnel
+            ? _app.Processes.RestartAsync(role, cancellationToken)
+            : Task.Run(() => _app.Processes.Restart(role), cancellationToken);
+
+    private sealed record AvailableUpdateStatus(
+        bool HasUpdate,
+        string ToolTipMessage,
+        string NotificationVersion)
+    {
+        public string BalloonMessage => string.IsNullOrWhiteSpace(ToolTipMessage)
+            ? "发现可更新组件"
+            : ToolTipMessage;
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !_disposed)
         {
+            _disposed = true;
             _exiting = true;
-            _backgroundWorkerCts.Cancel();
+            try
+            {
+                _backgroundWorkerCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
             if (_mainWindow is not null)
             {
                 _mainWindow.Close();
                 _mainWindow = null;
             }
+            _settingsWindow?.ForceClose();
+            _settingsWindow = null;
+            _environmentSetupWindow?.Close();
+            _environmentSetupWindow = null;
+            _updateWindow?.Close();
+            _updateWindow = null;
             _timer.Dispose();
             _startupTimer.Dispose();
             _dispatcher.Dispose();
@@ -489,7 +777,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var textColor = e.Item.Enabled
                 ? e.Item.ForeColor
                 : TrayMenuColors.MutedText;
-            var textBounds = new Rectangle(14, 0, e.Item.Width - 28, e.Item.Height);
+            var rightInset = e.Item is ToolStripMenuItem { HasDropDownItems: true }
+                ? 30
+                : 14;
+            var textBounds = new Rectangle(14, 0, e.Item.Width - 14 - rightInset, e.Item.Height);
             TextRenderer.DrawText(
                 e.Graphics,
                 e.Text,
@@ -501,6 +792,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 TextFormatFlags.SingleLine |
                 TextFormatFlags.EndEllipsis |
                 TextFormatFlags.NoPrefix);
+        }
+
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+        {
+            if (e.Item is not ToolStripMenuItem item || !item.HasDropDownItems)
+            {
+                return;
+            }
+
+            var centerY = e.Item.Height / 2;
+            var right = e.Item.Width - 13;
+            using var pen = new Pen(TrayMenuColors.MutedText, 1.4F)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            };
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.DrawLines(
+                pen,
+                new[]
+                {
+                    new Point(right - 4, centerY - 5),
+                    new Point(right, centerY),
+                    new Point(right - 4, centerY + 5)
+                });
         }
 
         private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius)

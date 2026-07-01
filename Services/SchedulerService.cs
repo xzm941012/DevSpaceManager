@@ -10,6 +10,13 @@ internal sealed class SchedulerService
     private const string TrayTaskName = "DevSpace Manager Tray";
     private const string TrayRunValueName = "DevSpaceManager";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private static readonly string[] LegacyRunValueNames =
+    [
+        TrayRunValueName,
+        "DevSpace Manager",
+        "DevSpaceManagerTray",
+        "DevSpace Manager Tray"
+    ];
     private readonly ManagerConfigStore _configStore;
 
     public SchedulerService(ManagerConfigStore configStore)
@@ -26,7 +33,8 @@ internal sealed class SchedulerService
         var exe = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot find current executable path.");
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
             ?? throw new InvalidOperationException("无法打开当前用户启动项注册表。");
-        key.SetValue(TrayRunValueName, $"\"{exe}\" --tray", RegistryValueKind.String);
+        RemoveLegacyTrayRunValues(key, exe);
+        key.SetValue(TrayRunValueName, $"\"{exe}\"", RegistryValueKind.String);
         UnregisterTrayTaskOnly();
     }
 
@@ -44,14 +52,52 @@ internal sealed class SchedulerService
     public void UnregisterTray()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-        key?.DeleteValue(TrayRunValueName, throwOnMissingValue: false);
+        if (key is not null)
+        {
+            RemoveLegacyTrayRunValues(key);
+        }
         UnregisterTrayTaskOnly();
     }
 
     private static string? TrayRunValue()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(TrayRunValueName) as string;
+        if (key is null) return null;
+        return LegacyRunValueNames
+            .Select(name => key.GetValue(name) as string)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+    }
+
+    private static void RemoveLegacyTrayRunValues(RegistryKey key, string? currentExe = null)
+    {
+        var currentPath = currentExe is null ? "" : Path.GetFullPath(currentExe);
+        foreach (var valueName in key.GetValueNames())
+        {
+            if (!LegacyRunValueNames.Contains(valueName, StringComparer.OrdinalIgnoreCase)) continue;
+
+            var raw = key.GetValue(valueName) as string ?? "";
+            if (valueName.Equals(TrayRunValueName, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(currentPath) &&
+                string.Equals(ExtractExecutablePath(raw), currentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            key.DeleteValue(valueName, throwOnMissingValue: false);
+        }
+    }
+
+    private static string ExtractExecutablePath(string command)
+    {
+        var trimmed = command.Trim();
+        if (trimmed.StartsWith('"'))
+        {
+            var end = trimmed.IndexOf('"', 1);
+            return end > 1 ? trimmed[1..end] : trimmed.Trim('"');
+        }
+
+        var exeIndex = trimmed.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return exeIndex >= 0 ? trimmed[..(exeIndex + 4)] : trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? trimmed;
     }
 
     private static void UnregisterTrayTaskOnly() =>

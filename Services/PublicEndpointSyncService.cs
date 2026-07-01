@@ -136,9 +136,9 @@ internal sealed class PublicEndpointSyncService
         string fixedPublicBaseUrl,
         string tunnelName,
         string protocol,
-        int port)
+        int proxyPort)
     {
-        if (port is < 1 or > 65535)
+        if (proxyPort is < 1 or > 65535)
         {
             throw new InvalidOperationException("本地代理端口必须在 1 到 65535 之间。");
         }
@@ -153,8 +153,8 @@ internal sealed class PublicEndpointSyncService
         {
             var config = _configStore.Reload();
             config.UseTemporaryCloudflareTunnel = useTemporaryTunnel;
-            config.DevSpacePort = port;
-            config.LocalHealthUrl = $"http://127.0.0.1:{port}/healthz";
+            config.RequestProxyPort = proxyPort;
+            config.LocalHealthUrl = $"http://127.0.0.1:{config.DevSpacePort}/healthz";
             config.CloudflaredProtocol = normalizedProtocol;
             config.TemporaryPublicBaseUrlPending = useTemporaryTunnel;
 
@@ -187,7 +187,7 @@ internal sealed class PublicEndpointSyncService
         {
             lines.Add("ingress:");
             lines.Add($"  - hostname: {hostname}");
-            lines.Add($"    service: http://localhost:{port}");
+            lines.Add($"    service: http://127.0.0.1:{port}");
             lines.Add("  - service: http_status:404");
             File.WriteAllLines(path, lines);
             return;
@@ -206,7 +206,7 @@ internal sealed class PublicEndpointSyncService
             if (lines[i].Contains("service: http://localhost:", StringComparison.OrdinalIgnoreCase) ||
                 lines[i].Contains("service: http://127.0.0.1:", StringComparison.OrdinalIgnoreCase))
             {
-                lines[i] = $"    service: http://localhost:{port}";
+                lines[i] = $"    service: http://127.0.0.1:{port}";
                 changed = true;
             }
         }
@@ -216,7 +216,7 @@ internal sealed class PublicEndpointSyncService
             lines.Clear();
             lines.Add("ingress:");
             lines.Add($"  - hostname: {hostname}");
-            lines.Add($"    service: http://localhost:{port}");
+            lines.Add($"    service: http://127.0.0.1:{port}");
             lines.Add("  - service: http_status:404");
         }
 

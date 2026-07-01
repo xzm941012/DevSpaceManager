@@ -169,6 +169,11 @@ button {
   padding: 13px 0;
 }
 
+.mcp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 136px;
+}
+
 .profile-main {
   min-width: 0;
 }
@@ -191,6 +196,13 @@ button {
   white-space: nowrap;
 }
 
+.mcp-tool-count {
+  flex: 0 0 auto;
+  color: #777770;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .profile-meta {
   max-width: 560px;
   margin-top: 3px;
@@ -207,6 +219,45 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.mcp-actions {
+  flex: 0 0 136px;
+  display: grid;
+  grid-template-columns: 32px 32px 38px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mcp-actions .icon-button,
+.mcp-actions .switch {
+  flex: 0 0 auto;
+}
+
+.tool-list {
+  display: grid;
+}
+
+.tool-row {
+  min-height: 64px;
+  border-bottom: 1px solid #eeeeeb;
+  padding: 12px 0;
+}
+
+.tool-name {
+  color: #242421;
+  font-weight: 500;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.tool-description {
+  margin-top: 4px;
+  color: #777770;
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .subpage-header {

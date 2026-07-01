@@ -7,6 +7,8 @@ namespace DevSpaceManager.Services;
 
 internal sealed class EnvironmentService
 {
+    private static readonly TimeSpan PublicHealthConfirmDelay = TimeSpan.FromMilliseconds(1200);
+
     private readonly ManagerConfigStore _configStore;
 
     public EnvironmentService(ManagerConfigStore configStore)
@@ -71,6 +73,18 @@ internal sealed class EnvironmentService
     {
         var config = _configStore.Reload();
         var pub = await health.CheckPublicAsync(cancellationToken);
+        if (!pub.Ok)
+        {
+            await Task.Delay(PublicHealthConfirmDelay, cancellationToken);
+            var confirmedPub = await health.CheckPublicAsync(cancellationToken);
+            if (confirmedPub.Ok)
+            {
+                return EnvironmentDiagnostic.Healthy("公网 MCP 可访问。");
+            }
+
+            pub = confirmedPub;
+        }
+
         if (pub.Ok)
         {
             return EnvironmentDiagnostic.Healthy("公网 MCP 可访问。");
@@ -354,10 +368,10 @@ internal sealed class EnvironmentService
                     : $"当前：{string.Join(", ", hostnames)}；期望：{expectedHost}"));
 
             checks.Add(services.Any(service => expectedServices.Any(expected => string.Equals(service, expected, StringComparison.OrdinalIgnoreCase)))
-                ? new EnvironmentCheck("Cloudflare 本地端口", true, $"localhost:{expectedPort}")
+                ? new EnvironmentCheck("Cloudflare 本地端口", true, $"127.0.0.1:{expectedPort}")
                 : new EnvironmentCheck("Cloudflare 本地端口", false, services.Count == 0
-                    ? $"config.yml 缺少 service: http://localhost:{expectedPort}"
-                    : $"当前：{string.Join(", ", services)}；期望：http://localhost:{expectedPort}"));
+                    ? $"config.yml 缺少 service: http://127.0.0.1:{expectedPort}"
+                    : $"当前：{string.Join(", ", services)}；期望：http://127.0.0.1:{expectedPort}"));
 
             return checks;
         }
@@ -779,7 +793,7 @@ internal sealed class EnvironmentService
             "",
             "ingress:",
             "  - hostname: $hostname",
-            "    service: http://localhost:$port",
+            "    service: http://127.0.0.1:$port",
             "  - service: http_status:404"
           ) -join [Environment]::NewLine
           $yaml | Set-Content -Path $configPath -Encoding UTF8

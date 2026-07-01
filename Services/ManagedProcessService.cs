@@ -190,15 +190,21 @@ internal sealed class ManagedProcessService : IDisposable
     {
         EnsureFile(config.GitBashPath, "Git Bash");
         EnsureFile(config.DevSpaceCommand, "DevSpace command");
-        var command = $"{CommandProcess.Quote(CommandProcess.ToBashPath(config.DevSpaceCommand))} serve";
+        Directory.CreateDirectory(AppPaths.LogDirectory);
+        var command =
+            $"{CommandProcess.Quote(CommandProcess.ToBashPath(config.DevSpaceCommand))} serve " +
+            $">> {CommandProcess.Quote(CommandProcess.ToBashPath(config.DevSpaceStdoutLog))} " +
+            $"2>> {CommandProcess.Quote(CommandProcess.ToBashPath(config.DevSpaceStderrLog))}";
         var start = CommandProcess.CreateBash(config.GitBashPath, command);
         start.UseShellExecute = false;
         start.CreateNoWindow = true;
         start.WorkingDirectory = Path.GetDirectoryName(config.DevSpaceConfigPath) ?? AppPaths.UserProfile;
-        start.RedirectStandardOutput = true;
-        start.RedirectStandardError = true;
+        start.RedirectStandardOutput = false;
+        start.RedirectStandardError = false;
         start.Environment["DEVSPACE_LOG_LEVEL"] = config.DevSpaceLogLevel;
         start.Environment["DEVSPACE_LOG_FORMAT"] = config.DevSpaceLogFormat;
+        start.Environment["DEVSPACE_LOG_TOOL_CALLS"] = config.DevSpaceLogToolCalls ? "1" : "0";
+        start.Environment["DEVSPACE_LOG_REQUESTS"] = config.DevSpaceLogRequests ? "1" : "0";
         start.Environment["DEVSPACE_TOOL_MODE"] = config.DevSpaceToolMode;
         start.Environment["DEVSPACE_WIDGETS"] = config.DevSpaceWidgets;
         start.Environment["DEVSPACE_SKILLS"] = config.DevSpaceSkills ? "1" : "0";
@@ -209,13 +215,14 @@ internal sealed class ManagedProcessService : IDisposable
         }
         CommandProcess.ApplyGitBashPath(start, config.GitBashPath, config.NodeDirectory);
 
-        return StartWithLogs(start, config.DevSpaceStdoutLog, config.DevSpaceStderrLog);
+        return StartWithoutRedirectedLogs(start, "DevSpace");
     }
 
     private Process StartTunnel(ManagerConfig config)
     {
         var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
         EnsureFile(cloudflaredPath, "cloudflared");
+        _proxy.EnsureState();
         if (config.UseTemporaryCloudflareTunnel)
         {
             _publicEndpoints.MarkTemporaryPublicBaseUrlPending();
@@ -243,6 +250,7 @@ internal sealed class ManagedProcessService : IDisposable
             temporaryStart.RedirectStandardError = true;
             return StartWithLogs(
                 temporaryStart,
+                "Cloudflare Tunnel",
                 config.TunnelStdoutLog,
                 config.TunnelStderrLog,
                 HandleTemporaryTunnelLine,
@@ -267,7 +275,7 @@ internal sealed class ManagedProcessService : IDisposable
         start.WorkingDirectory = Path.GetDirectoryName(config.CloudflaredConfigPath) ?? AppPaths.UserProfile;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
-        return StartWithLogs(start, config.TunnelStdoutLog, config.TunnelStderrLog);
+        return StartWithLogs(start, "Cloudflare Tunnel", config.TunnelStdoutLog, config.TunnelStderrLog);
     }
 
     private void HandleTemporaryTunnelLine(string? line)
@@ -295,6 +303,7 @@ internal sealed class ManagedProcessService : IDisposable
 
     private static Process StartWithLogs(
         ProcessStartInfo start,
+        string label,
         string stdoutPath,
         string stderrPath,
         Action<string?>? onOutputLine = null,
@@ -302,6 +311,17 @@ internal sealed class ManagedProcessService : IDisposable
     {
         Directory.CreateDirectory(AppPaths.LogDirectory);
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        process.Exited += (_, _) =>
+        {
+            try
+            {
+                Log.Worker($"{label} exited with code {process.ExitCode}.");
+            }
+            catch (Exception ex)
+            {
+                Log.Worker($"{label} exited; failed to read exit code: {ex.Message}");
+            }
+        };
         process.OutputDataReceived += (_, e) =>
         {
             AppendLine(stdoutPath, e.Data);
@@ -315,6 +335,24 @@ internal sealed class ManagedProcessService : IDisposable
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+        return process;
+    }
+
+    private static Process StartWithoutRedirectedLogs(ProcessStartInfo start, string label)
+    {
+        var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        process.Exited += (_, _) =>
+        {
+            try
+            {
+                Log.Worker($"{label} exited with code {process.ExitCode}.");
+            }
+            catch (Exception ex)
+            {
+                Log.Worker($"{label} exited; failed to read exit code: {ex.Message}");
+            }
+        };
+        process.Start();
         return process;
     }
 

@@ -11,6 +11,12 @@ internal static class AppPaths
     public static string ConfigPath { get; } =
         Path.Combine(AppDataDirectory, "config.json");
 
+    public static string MountedMcpCachePath { get; } =
+        Path.Combine(AppDataDirectory, "mounted-mcps.json");
+
+    public static string CodexConfigPath { get; } =
+        Path.Combine(UserProfile, ".codex", "config.toml");
+
     public static string LogDirectory { get; } =
         Path.Combine(AppDataDirectory, "logs");
 

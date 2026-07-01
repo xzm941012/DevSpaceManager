@@ -32,6 +32,43 @@ internal sealed class UpdateService
         return new UpdateInfo(current, latest, hasUpdate, notes);
     }
 
+    public async Task<ToolVersionInfo> CheckCloudflaredAsync(CancellationToken cancellationToken = default)
+    {
+        var config = _configStore.Reload();
+        var cloudflaredPath = ExecutableResolver.ResolveCloudflared(config.CloudflaredPath);
+        if (!File.Exists(cloudflaredPath))
+        {
+            return new ToolVersionInfo("cloudflared", "unknown", "未安装", false, "未找到 cloudflared。");
+        }
+
+        var output = await RunCaptureProcessAsync(cloudflaredPath, "--version", cancellationToken);
+        var version = ParseCloudflaredVersion(output);
+        var upgrade = await CheckWingetUpgradeAsync(cancellationToken);
+        var hasUpdate = upgrade.HasUpdate;
+        var latest = string.IsNullOrWhiteSpace(upgrade.LatestVersion)
+            ? (hasUpdate ? "可通过 winget 更新" : "已是最新")
+            : upgrade.LatestVersion;
+        return new ToolVersionInfo(
+            "cloudflared",
+            string.IsNullOrWhiteSpace(version) ? "unknown" : version,
+            latest,
+            hasUpdate,
+            hasUpdate
+                ? $"发现 cloudflared 可更新：{version} -> {latest}。"
+                : $"cloudflared 已是最新版本。当前版本：{version}。");
+    }
+
+    public async Task UpdateCloudflaredAsync(IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+    {
+        progress?.Report("正在通过 winget 更新 cloudflared...");
+        await RunCaptureProcessAsync(
+            "winget",
+            "upgrade --id Cloudflare.cloudflared -e --accept-package-agreements --accept-source-agreements",
+            cancellationToken);
+        progress?.Report("cloudflared 更新命令已执行。");
+        Log.Update("cloudflared 更新命令已执行。");
+    }
+
     public async Task UpdateDevSpaceAsync(IProgress<string>? progress = null, CancellationToken cancellationToken = default)
     {
         var config = _configStore.Reload();
@@ -102,6 +139,46 @@ internal sealed class UpdateService
         return string.IsNullOrWhiteSpace(output) ? error : output;
     }
 
+    private static async Task<string> RunCaptureProcessAsync(string fileName, string arguments, CancellationToken cancellationToken)
+    {
+        var start = CommandProcess.Create(fileName, arguments);
+        start.UseShellExecute = false;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        start.CreateNoWindow = true;
+        using var process = Process.Start(start) ?? throw new InvalidOperationException($"Failed to start {fileName}");
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? output.Trim() : error.Trim());
+        }
+
+        return string.IsNullOrWhiteSpace(output) ? error : output;
+    }
+
+    private static async Task<(bool HasUpdate, string LatestVersion)> CheckWingetUpgradeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var output = await RunCaptureProcessAsync(
+                "winget",
+                "upgrade --id Cloudflare.cloudflared -e --accept-source-agreements --disable-interactivity",
+                cancellationToken);
+            var latest = ParseWingetLatestVersion(output);
+            var hasUpdate = output.Contains("Cloudflare.cloudflared", StringComparison.OrdinalIgnoreCase) ||
+                            output.Contains("cloudflared", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(latest);
+            return (hasUpdate, latest);
+        }
+        catch
+        {
+            return (false, "");
+        }
+    }
+
     private static async Task RunStreamingBashAsync(string bashPath, string command, string logPath, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
@@ -124,6 +201,48 @@ internal sealed class UpdateService
         if (line is null) return;
         File.AppendAllText(path, line + Environment.NewLine);
     }
+
+    private static string ParseCloudflaredVersion(string output)
+    {
+        var marker = "cloudflared version ";
+        var index = output.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0) return "";
+
+        var start = index + marker.Length;
+        return output[start..]
+            .Split(new[] { '\r', '\n', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? "";
+    }
+
+    private static string ParseWingetLatestVersion(string output)
+    {
+        foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Reverse())
+        {
+            if (!line.Contains("Cloudflare.cloudflared", StringComparison.OrdinalIgnoreCase) &&
+                !line.Contains("cloudflared", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var versions = line
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => Version.TryParse(part.TrimStart('v', 'V'), out _))
+                .ToArray();
+            if (versions.Length > 0)
+            {
+                return versions[^1];
+            }
+        }
+
+        return "";
+    }
 }
 
 internal sealed record UpdateInfo(string CurrentVersion, string LatestVersion, bool HasUpdate, string Notes);
+
+internal sealed record ToolVersionInfo(
+    string Name,
+    string CurrentVersion,
+    string LatestVersion,
+    bool HasUpdate,
+    string Notes);

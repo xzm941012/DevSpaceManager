@@ -127,9 +127,14 @@ internal sealed class ManagerConfigStore
         config.LocalDebugPort = config.LocalDebugPort is >= 1024 and <= 65535
             ? config.LocalDebugPort
             : 9223;
+        config.MountedMcps ??= [];
         config.UpdateCheckHours = config.UpdateCheckHours is >= 1 and <= 168
             ? config.UpdateCheckHours
             : 24;
+        config.DevSpaceLogLevel = NormalizeLogLevel(config.DevSpaceLogLevel);
+        config.DevSpaceLogFormat = NormalizeLogFormat(config.DevSpaceLogFormat);
+        config.DevSpaceToolMode = NormalizeToolMode(config.DevSpaceToolMode);
+        config.DevSpaceWidgets = NormalizeWidgets(config.DevSpaceWidgets);
         config.DevSpaceAgentDir = Blank(config.DevSpaceAgentDir)
             ? Path.Combine(user, ".codex")
             : config.DevSpaceAgentDir;
@@ -193,6 +198,30 @@ internal sealed class ManagerConfigStore
     }
 
     private static bool Blank(string value) => string.IsNullOrWhiteSpace(value);
+
+    private static string NormalizeWidgets(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "full" or "changes" or "off" ? normalized : "off";
+    }
+
+    private static string NormalizeToolMode(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "minimal" or "codex" or "full" ? normalized : "minimal";
+    }
+
+    private static string NormalizeLogLevel(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "silent" or "error" or "warn" or "info" or "debug" ? normalized : "warn";
+    }
+
+    private static string NormalizeLogFormat(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "json" or "pretty" ? normalized : "json";
+    }
 
     private static bool NeedsUnixShim(string currentPath, string nodeDirectory, string baseName)
     {

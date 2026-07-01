@@ -47,6 +47,15 @@ public sealed partial class EnvironmentSetupWindow
     private WpfTextBox? _devSpacePortTextBox;
     private WpfListBox? _devSpaceAllowedRootsList;
     private WpfButton? _devSpaceRemoveRootButton;
+    private Border? _devSpaceAdvancedContent;
+    private System.Windows.Shapes.Path? _devSpaceAdvancedChevron;
+    private WpfComboBox? _devSpaceWidgetsComboBox;
+    private WpfComboBox? _devSpaceToolModeComboBox;
+    private WpfComboBox? _devSpaceLogToolCallsComboBox;
+    private WpfComboBox? _devSpaceLogRequestsComboBox;
+    private WpfComboBox? _devSpaceSkillsComboBox;
+    private WpfComboBox? _devSpaceLogLevelComboBox;
+    private WpfComboBox? _devSpaceLogFormatComboBox;
     private WpfButton? _lastCopiedButton;
 
     internal EnvironmentSetupWindow(AppHost app, bool orderedMode)
@@ -209,11 +218,8 @@ public sealed partial class EnvironmentSetupWindow
             return;
         }
 
-        var checks = (await _app.Environment.CheckInitializationAsync())
-            .Where(check => check.Name.Contains("Cloudflare", StringComparison.OrdinalIgnoreCase) ||
-                            check.Name.Contains("Tunnel", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        _cloudflarePassed = checks.Count > 0 && checks.All(check => check.Ok);
+        var result = await CheckFixedCloudflareAllowedAsync();
+        _cloudflarePassed = result.Ok;
     }
 
     private async Task CheckDevSpaceInitInBackgroundAsync()
@@ -258,7 +264,7 @@ public sealed partial class EnvironmentSetupWindow
         ResultPanel.Children.Add(AddressModeRow(config.UseTemporaryCloudflareTunnel));
         if (config.UseTemporaryCloudflareTunnel)
         {
-            ResultPanel.Children.Add(CloudflarePortEditorRow(config.DevSpacePort));
+            ResultPanel.Children.Add(CloudflarePortEditorRow(config.RequestProxyPort));
             ResultPanel.Children.Add(StatusOnlyRow(
                 "Cloudflare Tunnel",
                 _cloudflareTunnelStatus,
@@ -274,7 +280,7 @@ public sealed partial class EnvironmentSetupWindow
         {
             ResultPanel.Children.Add(PublicBaseUrlEditorRow(config));
             ResultPanel.Children.Add(TunnelNameEditorRow(config.CloudflareTunnelName));
-            ResultPanel.Children.Add(CloudflarePortEditorRow(config.DevSpacePort));
+            ResultPanel.Children.Add(CloudflarePortEditorRow(config.RequestProxyPort));
             ResultPanel.Children.Add(CloudflareProtocolRow(config.CloudflaredProtocol));
             ResultPanel.Children.Add(StatusOnlyRow(
                 "Cloudflare Tunnel",
@@ -299,8 +305,15 @@ public sealed partial class EnvironmentSetupWindow
         RenderCloudflareRefreshing(config);
         await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
 
-        var tunnelRunningTask = Task.Run(() => _app.Processes.IsRunning(ProcessRole.CloudflareTunnel));
-        Task<bool>? allowedTask = config.UseTemporaryCloudflareTunnel ? null : Task.Run(async () => await CheckFixedCloudflareAllowedAsync());
+        var tunnelRunningTask = Task.Run(async () =>
+        {
+            var running = _app.Processes.IsRunning(ProcessRole.CloudflareTunnel);
+            var publicHealth = await _app.Health.CheckPublicAsync();
+            return running || publicHealth.Ok;
+        });
+        Task<(bool Ok, string Message)>? allowedTask = config.UseTemporaryCloudflareTunnel
+            ? null
+            : Task.Run(async () => await CheckFixedCloudflareAllowedAsync());
 
         if (allowedTask is not null)
         {
@@ -322,10 +335,9 @@ public sealed partial class EnvironmentSetupWindow
             : "未启动";
         if (allowedTask is not null)
         {
-            _cloudflareAllowed = allowedTask.Result;
-            _cloudflareAllowedStatus = _cloudflareAllowed == true
-                ? "允许访问"
-                : "未允许访问，请保存补全配置后重试。";
+            var allowed = allowedTask.Result;
+            _cloudflareAllowed = allowed.Ok;
+            _cloudflareAllowedStatus = allowed.Message;
         }
         RenderCloudflare();
     }
@@ -339,12 +351,12 @@ public sealed partial class EnvironmentSetupWindow
         {
             ResultPanel.Children.Add(PublicBaseUrlEditorRow(config));
             ResultPanel.Children.Add(TunnelNameEditorRow(config.CloudflareTunnelName));
-            ResultPanel.Children.Add(CloudflarePortEditorRow(config.DevSpacePort));
+            ResultPanel.Children.Add(CloudflarePortEditorRow(config.RequestProxyPort));
             ResultPanel.Children.Add(CloudflareProtocolRow(config.CloudflaredProtocol));
         }
         else
         {
-            ResultPanel.Children.Add(CloudflarePortEditorRow(config.DevSpacePort));
+            ResultPanel.Children.Add(CloudflarePortEditorRow(config.RequestProxyPort));
         }
 
         ResultPanel.Children.Add(StatusOnlyRow("Cloudflare Tunnel", "正在读取启动状态...", null, CheckVisualState.Progress));
@@ -480,14 +492,29 @@ public sealed partial class EnvironmentSetupWindow
         }
     }
 
-    private async Task<bool> CheckFixedCloudflareAllowedAsync()
+    private async Task<(bool Ok, string Message)> CheckFixedCloudflareAllowedAsync()
     {
         var checks = await _app.Environment.CheckInitializationAsync();
         _latestCloudflareChecks.Clear();
         _latestCloudflareChecks.AddRange(checks.Where(check =>
             check.Name.Contains("Cloudflare", StringComparison.OrdinalIgnoreCase) ||
             check.Name.Contains("Tunnel", StringComparison.OrdinalIgnoreCase)));
-        return _latestCloudflareChecks.Count > 0 && _latestCloudflareChecks.All(check => check.Ok);
+        var failed = _latestCloudflareChecks.FirstOrDefault(check => !check.Ok);
+        if (failed is not null)
+        {
+            return (false, $"配置未完成：{failed.Name} - {failed.Detail}");
+        }
+
+        var publicHealth = await _app.Health.CheckPublicAsync();
+        if (publicHealth.Ok)
+        {
+            return (true, "允许访问，公网健康检查通过。");
+        }
+
+        var local = await _app.Health.CheckLocalAsync();
+        return local.Ok
+            ? (false, $"公网暂不可访问：{publicHealth.Message}。本地 DevSpace 已可访问，请检查 Cloudflare DNS/路由是否指向当前 Tunnel。")
+            : (false, $"公网暂不可访问：{publicHealth.Message}。本地 DevSpace 也未通过：{local.Message}");
     }
 
     private FrameworkElement PublicBaseUrlEditorRow(ManagerConfig config)
@@ -568,6 +595,15 @@ public sealed partial class EnvironmentSetupWindow
         _devSpaceNodeVersionComboBox = null;
         _devSpaceAllowedRootsList = null;
         _devSpaceRemoveRootButton = null;
+        _devSpaceAdvancedContent = null;
+        _devSpaceAdvancedChevron = null;
+        _devSpaceWidgetsComboBox = null;
+        _devSpaceToolModeComboBox = null;
+        _devSpaceLogToolCallsComboBox = null;
+        _devSpaceLogRequestsComboBox = null;
+        _devSpaceSkillsComboBox = null;
+        _devSpaceLogLevelComboBox = null;
+        _devSpaceLogFormatComboBox = null;
 
         ResultPanel.Children.Add(ReadOnlyValueRow(
             "当前公网地址",
@@ -577,6 +613,7 @@ public sealed partial class EnvironmentSetupWindow
         ResultPanel.Children.Add(NodeVersionRow(config.NodeVersion));
         ResultPanel.Children.Add(PortEditorRow(config.DevSpacePort));
         ResultPanel.Children.Add(AllowedRootsRow(roots));
+        ResultPanel.Children.Add(DevSpaceAdvancedOptionsRow(config));
         ResultPanel.Children.Add(DevSpaceStatusRow());
 
         _devSpacePassed = File.Exists(config.DevSpaceConfigPath) && File.Exists(AppPaths.DevSpaceAuthPath);
@@ -592,21 +629,29 @@ public sealed partial class EnvironmentSetupWindow
         ResultPanel.Children.Add(NodeVersionRow(config.NodeVersion));
         ResultPanel.Children.Add(PortEditorRow(config.DevSpacePort));
         ResultPanel.Children.Add(AllowedRootsRow(PublicEndpointSyncService.ReadAllowedRoots(config.DevSpaceConfigPath).ToList()));
+        ResultPanel.Children.Add(DevSpaceAdvancedOptionsRow(config));
         ResultPanel.Children.Add(StatusOnlyRow("DevSpace 启动状态", "正在检测启动状态...", null, CheckVisualState.Progress));
         FooterStatus.Text = "正在检测 DevSpace 启动状态...";
         await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
 
-        if (!File.Exists(AppPaths.DevSpaceAuthPath))
+        var local = await _app.Health.CheckLocalAsync();
+        if (local.Ok)
+        {
+            _devSpaceRunning = true;
+            _devSpaceStatus = $"已启动，本地健康检查通过：{config.LocalHealthUrl}";
+        }
+        else if (!File.Exists(AppPaths.DevSpaceAuthPath))
         {
             _devSpaceRunning = false;
             _devSpaceStatus = "未生成 Owner password，保存时会自动生成。";
         }
         else
         {
-            _devSpaceRunning = await Task.Run(() => _app.Processes.IsRunning(ProcessRole.DevSpace));
+            var processRunning = await Task.Run(() => _app.Processes.IsRunning(ProcessRole.DevSpace));
+            _devSpaceRunning = processRunning;
             _devSpaceStatus = _devSpaceRunning == true
-                ? $"已启动。本地地址：{config.LocalHealthUrl}"
-                : $"未启动。本地地址：{config.LocalHealthUrl}";
+                ? $"已启动，等待健康检查通过：{config.LocalHealthUrl}（{local.Message}）"
+                : $"未启动。本地地址：{config.LocalHealthUrl}（{local.Message}）";
         }
         RenderDevSpaceConfig();
     }
@@ -685,6 +730,69 @@ public sealed partial class EnvironmentSetupWindow
         return SettingControlRow("Node 版本", CheckVisualState.Ok, _devSpaceNodeVersionComboBox);
     }
 
+    private FrameworkElement DevSpaceAdvancedOptionsRow(ManagerConfig config)
+    {
+        _devSpaceWidgetsComboBox = AdvancedValueComboBox(
+            new[]
+            {
+                "off",
+                "changes",
+                "full"
+            },
+            config.DevSpaceWidgets);
+        _devSpaceToolModeComboBox = AdvancedValueComboBox(
+            new[]
+            {
+                "minimal",
+                "codex",
+                "full"
+            },
+            config.DevSpaceToolMode);
+        _devSpaceLogToolCallsComboBox = AdvancedValueComboBox(BooleanOptions(), config.DevSpaceLogToolCalls ? "true" : "false");
+        _devSpaceLogRequestsComboBox = AdvancedValueComboBox(BooleanOptions(), config.DevSpaceLogRequests ? "true" : "false");
+        _devSpaceSkillsComboBox = AdvancedValueComboBox(BooleanOptions(), config.DevSpaceSkills ? "true" : "false");
+        _devSpaceLogLevelComboBox = AdvancedValueComboBox(
+            new[]
+            {
+                "silent",
+                "error",
+                "warn",
+                "info",
+                "debug"
+            },
+            config.DevSpaceLogLevel);
+        _devSpaceLogFormatComboBox = AdvancedValueComboBox(
+            new[]
+            {
+                "json",
+                "pretty"
+            },
+            config.DevSpaceLogFormat);
+
+        var content = new StackPanel();
+        content.Children.Add(AdvancedSettingRow("结果渲染模式", _devSpaceWidgetsComboBox));
+        content.Children.Add(AdvancedSettingRow("工具集模式", _devSpaceToolModeComboBox));
+        content.Children.Add(AdvancedSettingRow("记录工具调用日志", _devSpaceLogToolCallsComboBox));
+        content.Children.Add(AdvancedSettingRow("记录请求日志", _devSpaceLogRequestsComboBox));
+        content.Children.Add(AdvancedSettingRow("启用 Skills", _devSpaceSkillsComboBox));
+        content.Children.Add(AdvancedSettingRow("日志级别", _devSpaceLogLevelComboBox));
+        content.Children.Add(AdvancedSettingRow("日志格式", _devSpaceLogFormatComboBox, false));
+
+        _devSpaceAdvancedContent = new Border
+        {
+            Visibility = Visibility.Collapsed,
+            BorderBrush = BrushFrom("#ECECE7"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(22, 10, 0, 6),
+            Child = content
+        };
+
+        return AdvancedOptionsRow(AdvancedPanel(
+            "高级 DevSpace 参数",
+            "默认折叠。用于控制 MCP 渲染、日志和 Skills 行为。",
+            _devSpaceAdvancedContent));
+    }
+
     private FrameworkElement AllowedRootsRow(IReadOnlyList<string> roots)
     {
         _devSpaceAllowedRootsList = new WpfListBox
@@ -741,6 +849,170 @@ public sealed partial class EnvironmentSetupWindow
         actions.Children.Add(_devSpaceRemoveRootButton);
 
         return DirectoryListRow(listShell, actions);
+    }
+
+    private static string[] BooleanOptions() => ["true", "false"];
+
+    private WpfComboBox AdvancedValueComboBox(IEnumerable<string> options, string selectedValue)
+    {
+        var comboBox = new WpfComboBox
+        {
+            Width = 140,
+            Height = 32,
+            Style = (Style)FindResource("CompactComboBoxStyle"),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+
+        foreach (var option in options)
+        {
+            comboBox.Items.Add(option);
+        }
+
+        comboBox.SelectedItem = comboBox.Items.Cast<object>().FirstOrDefault(item =>
+            string.Equals(item?.ToString(), selectedValue, StringComparison.OrdinalIgnoreCase));
+        if (comboBox.SelectedIndex < 0 && comboBox.Items.Count > 0)
+        {
+            comboBox.SelectedIndex = 0;
+        }
+
+        return comboBox;
+    }
+
+    private FrameworkElement AdvancedPanel(string title, string detail, Border content)
+    {
+        var shell = new StackPanel
+        {
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch
+        };
+        var header = new WpfButton
+        {
+            Style = (Style)FindResource("FlatTransparentButtonStyle"),
+            Padding = new Thickness(0, 8, 0, 8),
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+            Content = AdvancedHeaderContent(title, detail)
+        };
+        header.Click += (_, _) => ToggleDevSpaceAdvancedOptions();
+
+        shell.Children.Add(header);
+        shell.Children.Add(content);
+        return shell;
+    }
+
+    private FrameworkElement AdvancedOptionsRow(FrameworkElement panel)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 10), MinHeight = 48 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        panel.VerticalAlignment = VerticalAlignment.Center;
+        panel.HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch;
+        row.Children.Add(panel);
+        return row;
+    }
+
+    private FrameworkElement AdvancedHeaderContent(string title, string detail)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        _devSpaceAdvancedChevron = new System.Windows.Shapes.Path
+        {
+            Width = 11,
+            Height = 11,
+            Stroke = BrushFrom("#5F5F58"),
+            StrokeThickness = 1.5,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            Fill = System.Windows.Media.Brushes.Transparent,
+            Stretch = Stretch.Uniform,
+            Data = Geometry.Parse("M9 18l6-6-6-6"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0)
+        };
+        grid.Children.Add(_devSpaceAdvancedChevron);
+
+        var titleBlock = new TextBlock
+        {
+            Text = title,
+            Foreground = BrushFrom("#20201D"),
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var detailBlock = new TextBlock
+        {
+            Text = detail,
+            Foreground = BrushFrom("#6F6F68"),
+            FontSize = 12,
+            Margin = new Thickness(0, 2, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+        var copy = new StackPanel();
+        copy.Children.Add(titleBlock);
+        copy.Children.Add(detailBlock);
+        Grid.SetColumn(copy, 1);
+        grid.Children.Add(copy);
+
+        var hint = new TextBlock
+        {
+            Text = "MCP 渲染、日志、Skills",
+            Foreground = BrushFrom("#8A8A82"),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(hint, 2);
+        grid.Children.Add(hint);
+
+        return grid;
+    }
+
+    private void ToggleDevSpaceAdvancedOptions()
+    {
+        if (_devSpaceAdvancedContent is null || _devSpaceAdvancedChevron is null) return;
+
+        var expand = _devSpaceAdvancedContent.Visibility != Visibility.Visible;
+        _devSpaceAdvancedContent.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
+        _devSpaceAdvancedChevron.Data = Geometry.Parse(expand ? "M6 9l6 6 6-6" : "M9 18l6-6-6-6");
+    }
+
+    private FrameworkElement AdvancedSettingRow(string title, FrameworkElement control, bool showDivider = true)
+    {
+        var grid = new Grid
+        {
+            Height = 42,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var titleBlock = new TextBlock
+        {
+            Text = title,
+            Foreground = BrushFrom("#3B3B36"),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 16, 0)
+        };
+        grid.Children.Add(titleBlock);
+
+        control.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(control);
+
+        if (!showDivider)
+        {
+            return grid;
+        }
+
+        return new Border
+        {
+            BorderBrush = BrushFrom("#F0F0EB"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0),
+            Child = grid
+        };
     }
 
     private void AddDevSpaceAllowedRoot()
@@ -907,7 +1179,10 @@ public sealed partial class EnvironmentSetupWindow
         row.Children.Add(ResultIcon(state));
 
         var copy = new StackPanel { Margin = new Thickness(8, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
-        copy.Children.Add(new TextBlock { Text = title, Foreground = BrushFrom("#20201D"), FontSize = 13, FontWeight = FontWeights.SemiBold });
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            copy.Children.Add(new TextBlock { Text = title, Foreground = BrushFrom("#20201D"), FontSize = 13, FontWeight = FontWeights.SemiBold });
+        }
         if (!string.IsNullOrWhiteSpace(detail))
         {
             copy.Children.Add(new TextBlock { Text = detail, Foreground = BrushFrom("#6F6F68"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
@@ -1078,7 +1353,10 @@ public sealed partial class EnvironmentSetupWindow
 
     private async Task SaveDevSpaceConfigurationAsync()
     {
-        if (_devSpaceNodeVersionComboBox is null || _devSpacePortTextBox is null || _devSpaceAllowedRootsList is null)
+        if (_devSpaceNodeVersionComboBox is null || _devSpacePortTextBox is null || _devSpaceAllowedRootsList is null ||
+            _devSpaceWidgetsComboBox is null || _devSpaceToolModeComboBox is null || _devSpaceLogToolCallsComboBox is null ||
+            _devSpaceLogRequestsComboBox is null || _devSpaceSkillsComboBox is null || _devSpaceLogLevelComboBox is null ||
+            _devSpaceLogFormatComboBox is null)
         {
             FooterStatus.Text = "请先打开 DevSpace 配置页。";
             return;
@@ -1109,7 +1387,15 @@ public sealed partial class EnvironmentSetupWindow
                 .ToArray();
 
             ApplyDevSpaceNodeVersion(nodeVersion);
-            _app.PublicEndpoints.ApplyDevSpaceConfiguration(port, roots);
+            var config = _app.PublicEndpoints.ApplyDevSpaceConfiguration(port, roots);
+            config.DevSpaceWidgets = SelectedComboValue(_devSpaceWidgetsComboBox, "off");
+            config.DevSpaceToolMode = SelectedComboValue(_devSpaceToolModeComboBox, "minimal");
+            config.DevSpaceLogToolCalls = SelectedComboValue(_devSpaceLogToolCallsComboBox, "false") == "true";
+            config.DevSpaceLogRequests = SelectedComboValue(_devSpaceLogRequestsComboBox, "false") == "true";
+            config.DevSpaceSkills = SelectedComboValue(_devSpaceSkillsComboBox, "true") == "true";
+            config.DevSpaceLogLevel = SelectedComboValue(_devSpaceLogLevelComboBox, "warn");
+            config.DevSpaceLogFormat = SelectedComboValue(_devSpaceLogFormatComboBox, "json");
+            _app.ConfigStore.Save(config);
             EnsureDevSpaceOwnerToken();
 
             FooterStatus.Text = "已保存，正在重启 DevSpace...";
@@ -1150,6 +1436,11 @@ public sealed partial class EnvironmentSetupWindow
         {
             FooterStatus.Text = "已自动生成 DevSpace Owner password。";
         }
+    }
+
+    private static string SelectedComboValue(WpfComboBox comboBox, string fallback)
+    {
+        return comboBox.SelectedItem?.ToString()?.Trim() ?? fallback;
     }
 
     private void RepairDevSpaceDependencies()
@@ -1325,8 +1616,9 @@ public sealed partial class EnvironmentSetupWindow
             _cloudflareTunnelStatus = _cloudflareTunnelRunning == true ? "已启动" : "未启动";
             if (!useTemporaryTunnel)
             {
-                _cloudflareAllowed = await CheckFixedCloudflareAllowedAsync();
-                _cloudflareAllowedStatus = _cloudflareAllowed == true ? "允许访问" : "未允许访问，请保存补全配置后重试。";
+                var allowed = await CheckFixedCloudflareAllowedAsync();
+                _cloudflareAllowed = allowed.Ok;
+                _cloudflareAllowedStatus = allowed.Message;
             }
             RenderCloudflare();
             if (config.UseTemporaryCloudflareTunnel && !HasTemporaryUrl(_app.ConfigStore.Reload()))
@@ -1362,9 +1654,11 @@ public sealed partial class EnvironmentSetupWindow
                 return;
             }
 
-            if (running && !waitingForTemporaryUrl && (!requireHealth || health.Ok))
+            if (!waitingForTemporaryUrl && (!requireHealth || health.Ok || (running && role == ProcessRole.DevSpace)))
             {
-                FooterStatus.Text = $"{label} 已启动，状态检测通过。";
+                FooterStatus.Text = health.Ok
+                    ? $"{label} 已启动，状态检测通过。"
+                    : $"{label} 进程已启动，正在等待健康检查通过。";
                 return;
             }
 

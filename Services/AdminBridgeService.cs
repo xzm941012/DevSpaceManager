@@ -71,7 +71,11 @@ internal sealed class AdminBridgeService
             "profile.save" => await SaveProfileAsync(payload),
             "profile.delete" => await DeleteProfileAsync(payload),
             "config.saveBasics" => await SaveBasicsAsync(payload),
+            "startup.save" => await SaveStartupAsync(payload),
             "debug.save" => await SaveDebugAsync(payload),
+            "mcp.list" => await _app.MountedMcps.ListAsync(cancellationToken),
+            "mcp.setEnabled" => await SetMountedMcpEnabledAsync(payload, cancellationToken),
+            "mcp.refresh" => await RefreshMountedMcpAsync(payload, cancellationToken),
             "log.tail" => TailLog(payload),
             "environment.check" => await _app.Environment.CheckAsync(),
             "environment.openInstaller" => OpenInstaller(),
@@ -87,10 +91,12 @@ internal sealed class AdminBridgeService
         var local = await _app.Health.CheckLocalAsync(cancellationToken);
         var pub = await _app.Health.CheckPublicAsync(cancellationToken);
 
+        var publicConfig = PublicConfig(config, _app.Scheduler.IsTrayRegistered());
+
         return new
         {
             checkedAt = DateTimeOffset.Now,
-            config = PublicConfig(config),
+            config = publicConfig,
             ownerPassword = _app.AuthSecrets.ReadOwnerPassword(),
             services = new
             {
@@ -275,7 +281,34 @@ internal sealed class AdminBridgeService
         config = _app.PublicEndpoints.SyncCurrentModeToConfigs();
         _app.McpProxy.EnsureState();
         await Task.CompletedTask;
-        return PublicConfig(config);
+        return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
+    }
+
+    private async Task<object> SaveStartupAsync(JsonElement payload)
+    {
+        var config = _app.ConfigStore.Reload();
+        if (payload.TryGetProperty("startWithWindows", out var startWithWindows))
+        {
+            config.StartWithWindows = startWithWindows.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("startMinimizedToTray", out var startMinimizedToTray))
+        {
+            config.StartMinimizedToTray = startMinimizedToTray.GetBoolean();
+        }
+
+        if (config.StartWithWindows)
+        {
+            _app.Scheduler.RegisterTrayAtLogon();
+        }
+        else
+        {
+            _app.Scheduler.UnregisterTray();
+        }
+
+        _app.ConfigStore.Save(config);
+        await Task.CompletedTask;
+        return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
     }
 
     private async Task<object> SaveDebugAsync(JsonElement payload)
@@ -298,7 +331,24 @@ internal sealed class AdminBridgeService
 
         _app.ConfigStore.Save(config);
         await Task.CompletedTask;
-        return PublicConfig(config);
+        return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
+    }
+
+    private async Task<object> SetMountedMcpEnabledAsync(JsonElement payload, CancellationToken cancellationToken)
+    {
+        var name = RequiredString(payload, "name");
+        if (!payload.TryGetProperty("enabled", out var enabledElement))
+        {
+            throw new InvalidOperationException("缺少字段：enabled");
+        }
+
+        return await _app.MountedMcps.SetEnabledAsync(name, enabledElement.GetBoolean(), cancellationToken);
+    }
+
+    private async Task<object> RefreshMountedMcpAsync(JsonElement payload, CancellationToken cancellationToken)
+    {
+        var name = RequiredString(payload, "name");
+        return await _app.MountedMcps.RefreshAsync(name, cancellationToken);
     }
 
     private object TailLog(JsonElement payload)
@@ -351,7 +401,7 @@ internal sealed class AdminBridgeService
         return new { ok = true };
     }
 
-    private static object PublicConfig(ManagerConfig config) => new
+    private static object PublicConfig(ManagerConfig config, bool? trayRegistered = null) => new
     {
         config.PublicBaseUrl,
         configuredPublicBaseUrl = config.FixedPublicBaseUrl,
@@ -365,6 +415,8 @@ internal sealed class AdminBridgeService
         config.RequestProxyPort,
         config.AutoStartDevSpace,
         config.AutoStartTunnel,
+        startWithWindows = trayRegistered ?? config.StartWithWindows,
+        config.StartMinimizedToTray,
         config.AutoRestart,
         config.LocalDebugEnabled,
         config.LocalDebugPort,

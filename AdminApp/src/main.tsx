@@ -12,8 +12,10 @@ import {
   Globe2,
   HardDrive,
   Loader2,
+  ListTree,
   Network,
   Pencil,
+  Plug,
   Plus,
   RefreshCw,
   Settings,
@@ -51,6 +53,8 @@ type PublicConfig = {
   requestProxyPort: number;
   autoStartDevSpace: boolean;
   autoStartTunnel: boolean;
+  startWithWindows: boolean;
+  startMinimizedToTray: boolean;
   autoRestart: boolean;
   localDebugEnabled: boolean;
   localDebugPort: number;
@@ -74,7 +78,29 @@ type ProfileList = {
   profiles: PublicProfile[];
 };
 
-type SectionKey = "overview" | "browser" | "proxy" | "debug" | "logs";
+type MountedMcpTool = {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+};
+
+type MountedMcpServer = {
+  name: string;
+  type: string;
+  command: string;
+  enabled: boolean;
+  description: string;
+  instructions: string;
+  refreshedAt?: string;
+  toolCount: number;
+  tools: MountedMcpTool[];
+};
+
+type MountedMcpList = {
+  servers: MountedMcpServer[];
+};
+
+type SectionKey = "overview" | "browser" | "mcp" | "proxy" | "debug" | "logs";
 
 declare global {
   interface Window {
@@ -115,6 +141,10 @@ function App() {
   const [debugEnabled, setDebugEnabled] = React.useState(false);
   const [debugPort, setDebugPort] = React.useState("9223");
   const [proxyEnabled, setProxyEnabled] = React.useState(false);
+  const [startWithWindows, setStartWithWindows] = React.useState(false);
+  const [startMinimizedToTray, setStartMinimizedToTray] = React.useState(false);
+  const [mountedMcps, setMountedMcps] = React.useState<MountedMcpServer[]>([]);
+  const [mcpLoading, setMcpLoading] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -125,6 +155,8 @@ function App() {
       setDebugEnabled(next.config.localDebugEnabled);
       setDebugPort(String(next.config.localDebugPort));
       setProxyEnabled(next.config.requestProxyEnabled);
+      setStartWithWindows(next.config.startWithWindows);
+      setStartMinimizedToTray(next.config.startMinimizedToTray);
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新失败");
     } finally {
@@ -135,6 +167,30 @@ function App() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  const loadMountedMcps = React.useCallback(async (showToast = false) => {
+    setMcpLoading(true);
+    setError("");
+    try {
+      const next = await bridge<MountedMcpList>("mcp.list");
+      setMountedMcps(next.servers);
+      if (showToast) setToast("MCP 列表已刷新。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取 MCP 失败");
+    } finally {
+      setMcpLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (active === "mcp") void loadMountedMcps();
+  }, [active, loadMountedMcps]);
+
+  React.useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   async function saveDebug() {
     const port = Number(debugPort);
@@ -247,10 +303,68 @@ function App() {
     }
   }
 
+  async function saveStartupSetting(next: Partial<Pick<PublicConfig, "startWithWindows" | "startMinimizedToTray">>) {
+    const previousStartWithWindows = startWithWindows;
+    const previousStartMinimizedToTray = startMinimizedToTray;
+    const payload = {
+      startWithWindows,
+      startMinimizedToTray,
+      ...next,
+    };
+
+    setStartWithWindows(payload.startWithWindows);
+    setStartMinimizedToTray(payload.startMinimizedToTray);
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const config = await bridge<PublicConfig>("startup.save", payload);
+      setSnapshot((current) => (current ? { ...current, config } : current));
+      setToast("启动设置已保存。");
+    } catch (err) {
+      setStartWithWindows(previousStartWithWindows);
+      setStartMinimizedToTray(previousStartMinimizedToTray);
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setMountedMcpEnabled(name: string, enabled: boolean) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<MountedMcpList>("mcp.setEnabled", { name, enabled });
+      setMountedMcps(next.servers);
+      setToast(enabled ? "MCP 已启用。" : "MCP 已停用。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refreshMountedMcp(name: string) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<MountedMcpList>("mcp.refresh", { name });
+      setMountedMcps(next.servers);
+      setToast("工具列表已刷新。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "刷新 MCP 失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const config = snapshot?.config;
   const sections: Array<{ key: SectionKey; label: string; icon: React.ComponentType<{ size?: number; strokeWidth?: number }> }> = [
     { key: "overview", label: "总览", icon: Activity },
     { key: "browser", label: "浏览器", icon: Globe2 },
+    { key: "mcp", label: "MCP", icon: Plug },
     { key: "proxy", label: "代理", icon: Network },
     { key: "debug", label: "本地调试", icon: Bug },
     { key: "logs", label: "日志", icon: TerminalSquare },
@@ -278,7 +392,7 @@ function App() {
       </aside>
 
       <section className="content">
-        {active !== "browser" && (
+        {active !== "browser" && active !== "mcp" && (
           <PageHeader
             title={sections.find((item) => item.key === active)?.label ?? ""}
             subtitle={subtitle(active)}
@@ -294,7 +408,15 @@ function App() {
           <div className="empty-state">{loading ? "正在读取设置..." : "暂无设置数据"}</div>
         ) : (
           <>
-            {active === "overview" && <Overview snapshot={snapshot} />}
+            {active === "overview" && (
+              <Overview
+                snapshot={snapshot}
+                saving={saving}
+                startWithWindows={startWithWindows}
+                startMinimizedToTray={startMinimizedToTray}
+                onStartupSettingChange={saveStartupSetting}
+              />
+            )}
             {active === "browser" && (
               <BrowserSettings
                 config={config}
@@ -305,6 +427,16 @@ function App() {
                 onSwitchProfile={switchProfile}
                 onSaveProfile={saveProfile}
                 onDeleteProfile={deleteProfile}
+              />
+            )}
+            {active === "mcp" && (
+              <McpSettings
+                servers={mountedMcps}
+                loading={mcpLoading}
+                saving={saving}
+                onRefresh={() => void loadMountedMcps(true)}
+                onSetEnabled={setMountedMcpEnabled}
+                onRefreshServer={refreshMountedMcp}
               />
             )}
             {active === "proxy" && (
@@ -334,7 +466,19 @@ function App() {
   );
 }
 
-function Overview({ snapshot }: { snapshot: Snapshot }) {
+function Overview({
+  snapshot,
+  saving,
+  startWithWindows,
+  startMinimizedToTray,
+  onStartupSettingChange,
+}: {
+  snapshot: Snapshot;
+  saving: boolean;
+  startWithWindows: boolean;
+  startMinimizedToTray: boolean;
+  onStartupSettingChange: (next: Partial<Pick<PublicConfig, "startWithWindows" | "startMinimizedToTray">>) => Promise<void>;
+}) {
   const [secretVisible, setSecretVisible] = React.useState(false);
   const ownerPassword = snapshot.ownerPassword || "";
   return (
@@ -357,6 +501,17 @@ function Overview({ snapshot }: { snapshot: Snapshot }) {
           {secretVisible ? <EyeOff size={14} strokeWidth={1.4} aria-hidden="true" /> : <Eye size={14} strokeWidth={1.4} aria-hidden="true" />}
         </IconButton>
       </SettingRow>
+      <SettingRow title="开机启动" description="登录 Windows 后自动启动当前版本，保存时会清理旧版本启动项。">
+        <Switch checked={startWithWindows} onChange={(value) => void onStartupSettingChange({ startWithWindows: value })} label="开机启动" disabled={saving} />
+      </SettingRow>
+      <SettingRow title="启动时最小化到托盘" description="启动后只保留托盘图标，不自动打开 ChatGPT 主窗口。">
+        <Switch
+          checked={startMinimizedToTray}
+          onChange={(value) => void onStartupSettingChange({ startMinimizedToTray: value })}
+          label="启动时最小化到托盘"
+          disabled={saving}
+        />
+      </SettingRow>
       <SettingRow title="上次检查" description={new Date(snapshot.checkedAt).toLocaleString()} />
     </div>
   );
@@ -373,11 +528,13 @@ function PageHeader({
   subtitle,
   loading,
   onRefresh,
+  refreshLabel = "刷新",
 }: {
   title: string;
   subtitle: string;
   loading: boolean;
   onRefresh: () => void;
+  refreshLabel?: string;
 }) {
   return (
     <header className="content-header">
@@ -390,7 +547,7 @@ function PageHeader({
       </div>
       <button className="ghost-button" onClick={onRefresh} disabled={loading} type="button">
         <RefreshCw className={loading ? "spin" : undefined} size={14} strokeWidth={1.4} />
-        刷新
+        {refreshLabel}
       </button>
     </header>
   );
@@ -675,6 +832,162 @@ function ProfileEditorView({
   );
 }
 
+type McpView = "list" | "tools";
+
+function McpSettings({
+  servers,
+  loading,
+  saving,
+  onRefresh,
+  onSetEnabled,
+  onRefreshServer,
+}: {
+  servers: MountedMcpServer[];
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onSetEnabled: (name: string, enabled: boolean) => Promise<void>;
+  onRefreshServer: (name: string) => Promise<void>;
+}) {
+  const [view, setView] = React.useState<McpView>("list");
+  const [selectedName, setSelectedName] = React.useState("");
+  const [refreshingServer, setRefreshingServer] = React.useState("");
+  const [reverse, setReverse] = React.useState(false);
+  const selected = servers.find((server) => server.name === selectedName) ?? null;
+
+  function openTools(server: MountedMcpServer) {
+    setSelectedName(server.name);
+    setReverse(false);
+    setView("tools");
+  }
+
+  function backToList() {
+    setReverse(true);
+    setView("list");
+  }
+
+  async function refreshServer(name: string) {
+    setRefreshingServer(name);
+    try {
+      await onRefreshServer(name);
+    } finally {
+      setRefreshingServer("");
+    }
+  }
+
+  return (
+    <div className="settings-panel browser-panel">
+      <div className={view === "list" ? `browser-view ${reverse ? "slide-in-left" : ""}` : "browser-view slide-out-left"}>
+        {view === "list" && (
+          <McpListView
+            servers={servers}
+            loading={loading}
+            saving={saving}
+            onRefresh={onRefresh}
+            onOpenTools={openTools}
+            onSetEnabled={onSetEnabled}
+            onRefreshServer={refreshServer}
+            refreshingServer={refreshingServer}
+          />
+        )}
+      </div>
+      {view === "tools" && selected && (
+        <div className="browser-view slide-in-right">
+          <McpToolsView server={selected} saving={saving} onBack={backToList} onRefreshServer={refreshServer} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function McpListView({
+  servers,
+  loading,
+  saving,
+  onRefresh,
+  onOpenTools,
+  onSetEnabled,
+  onRefreshServer,
+  refreshingServer,
+}: {
+  servers: MountedMcpServer[];
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onOpenTools: (server: MountedMcpServer) => void;
+  onSetEnabled: (name: string, enabled: boolean) => Promise<void>;
+  onRefreshServer: (name: string) => Promise<void>;
+  refreshingServer: string;
+}) {
+  return (
+    <>
+      <PageHeader title="MCP" subtitle={subtitle("mcp")} loading={loading} onRefresh={onRefresh} refreshLabel="扫描" />
+
+      <div className="profile-list" aria-label="本机 MCP 列表">
+        {servers.length === 0 && <div className="empty-state">没有在 Codex 配置中发现 MCP。</div>}
+        {servers.map((server) => {
+          const refreshing = refreshingServer === server.name;
+          return (
+            <div className="profile-row mcp-row" key={server.name}>
+              <div className="profile-main">
+                <div className="profile-name-line">
+                  <span className="profile-name">{server.name}</span>
+                  <span className="mcp-tool-count">{server.toolCount} 工具</span>
+                </div>
+                <div className="profile-meta">{server.description || server.command}</div>
+                <div className="profile-meta">{server.command}</div>
+              </div>
+              <div className="mcp-actions">
+                <IconButton label={`刷新 ${server.name} 工具`} disabled={saving || refreshing} onClick={() => void onRefreshServer(server.name)}>
+                  <RefreshCw className={refreshing ? "spin" : undefined} size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+                <IconButton label="设置" onClick={() => onOpenTools(server)}>
+                  <Settings size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+                <Switch checked={server.enabled} onChange={(value) => void onSetEnabled(server.name, value)} label={`切换 ${server.name}`} disabled={saving} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function McpToolsView({
+  server,
+  saving,
+  onBack,
+  onRefreshServer,
+}: {
+  server: MountedMcpServer;
+  saving: boolean;
+  onBack: () => void;
+  onRefreshServer: (name: string) => Promise<void>;
+}) {
+  return (
+    <>
+      <SubpageHeader title={`${server.name} 工具`} onBack={onBack}>
+        <button className="secondary-button" type="button" disabled={saving} onClick={() => void onRefreshServer(server.name)}>
+          {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <RefreshCw size={14} strokeWidth={1.4} />}
+          刷新工具
+        </button>
+      </SubpageHeader>
+      <SettingRow title="说明" description={server.description || "暂无说明"} />
+      <SettingRow title="工具" description={server.refreshedAt ? `${server.toolCount} 个，上次刷新：${new Date(server.refreshedAt).toLocaleString()}` : "尚未刷新工具列表"} />
+      <div className="tool-list" aria-label={`${server.name} 工具列表`}>
+        {server.tools.length === 0 && <div className="empty-state">暂无工具缓存，点击刷新工具读取该 MCP 的 tools/list。</div>}
+        {server.tools.map((tool) => (
+          <div className="tool-row" key={tool.name}>
+            <div className="tool-name">{tool.name}</div>
+            <div className="tool-description">{tool.description || "暂无描述"}</div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function SubpageHeader({ title, onBack, children }: { title: string; onBack: () => void; children?: React.ReactNode }) {
   return (
     <div className="subpage-header">
@@ -886,6 +1199,8 @@ function subtitle(section: SectionKey) {
       return "查看当前服务状态和连接地址。";
     case "browser":
       return "管理 ChatGPT WebView 使用的 Profile、用户数据目录和浏览器代理。";
+    case "mcp":
+      return "选择要通过 DevSpaceManager 代理挂载给 ChatGPT 的本机 MCP。";
     case "proxy":
       return "查看 DevSpace 请求监控和端口配置。";
     case "debug":
