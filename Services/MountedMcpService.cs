@@ -225,6 +225,7 @@ internal sealed class MountedMcpService : IDisposable
             limit = Math.Clamp(requestedLimit, 1, 20);
         }
         var results = Search(query, limit);
+        LogToolSearch(query, limit, results);
         return McpContent(new JsonObject
         {
             ["query"] = query,
@@ -285,6 +286,14 @@ internal sealed class MountedMcpService : IDisposable
             .ThenBy(item => item.Tool, StringComparer.OrdinalIgnoreCase)
             .Take(limit)
             .ToArray();
+    }
+
+    private static void LogToolSearch(string query, int limit, IReadOnlyList<MountedMcpSearchResult> results)
+    {
+        var top = results.Count == 0
+            ? "none"
+            : string.Join(", ", results.Take(8).Select(item => $"{item.Server}.{item.Tool}:{item.Score}"));
+        Log.App($"Mounted MCP tool_search query=\"{LogText(query, 160)}\" limit={limit} results={results.Count} top={top}");
     }
 
     private IEnumerable<MountedMcpServerCache> EnabledCachedServers()
@@ -451,6 +460,12 @@ internal sealed class MountedMcpService : IDisposable
 
     private static string OneLine(string text) =>
         string.Join(" ", text.ReplaceLineEndings(" ").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string LogText(string text, int maxLength)
+    {
+        text = OneLine(text).Replace("\"", "\\\"");
+        return text.Length <= maxLength ? text : text[..maxLength].TrimEnd() + "...";
+    }
 
     private static JsonObject McpContent(JsonObject payload) => new()
     {

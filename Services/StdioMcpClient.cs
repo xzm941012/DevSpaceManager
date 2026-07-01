@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -8,6 +9,9 @@ namespace DevSpaceManager.Services;
 internal sealed class StdioMcpClient : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Encoding StdioEncoding = new UTF8Encoding(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
 
     private readonly MountedMcpDefinition _definition;
     private readonly ConcurrentDictionary<string, PendingMcpRequest> _pending = new(StringComparer.Ordinal);
@@ -160,6 +164,9 @@ internal sealed class StdioMcpClient : IDisposable
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardInputEncoding = StdioEncoding,
+                StandardOutputEncoding = StdioEncoding,
+                StandardErrorEncoding = StdioEncoding,
                 CreateNoWindow = true
             };
 
