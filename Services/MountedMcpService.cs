@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -29,13 +30,14 @@ internal sealed class MountedMcpService : IDisposable
         var config = _configStore.Reload();
         if (EnsureConfigRecords(config, definitions)) _configStore.Save(config);
         var caches = LoadCaches();
+        var snapshots = await ClientSnapshotsAsync(cancellationToken);
 
-        await Task.CompletedTask;
         return new
         {
             servers = definitions.Select(definition =>
             {
                 var cache = caches.GetValueOrDefault(definition.Name);
+                snapshots.TryGetValue(definition.Name, out var snapshot);
                 return new
                 {
                     definition.Name,
@@ -46,6 +48,10 @@ internal sealed class MountedMcpService : IDisposable
                     instructions = cache?.Instructions ?? "",
                     refreshedAt = cache?.RefreshedAt,
                     toolCount = cache?.Tools.Count ?? 0,
+                    state = snapshot?.State.ToString() ?? StdioMcpClientState.Stopped.ToString(),
+                    pendingCount = snapshot?.PendingCount ?? 0,
+                    lastError = snapshot?.LastError ?? "",
+                    recentErrors = snapshot?.RecentErrors ?? [],
                     tools = cache?.Tools.Select(PublicTool).ToArray() ?? []
                 };
             }).ToArray()
@@ -108,8 +114,39 @@ internal sealed class MountedMcpService : IDisposable
         var enabled = EnabledCachedServers().ToArray();
         if (enabled.Length == 0) return "";
 
-        var names = string.Join(", ", enabled.Select(item => item.Name));
-        return $"DevSpaceManager 还挂载了以下本机 MCP：{names}。需要使用这些本机 MCP 能力时，先调用 tool_search 搜索可用工具，再用 call_mounted_tool 按返回的 server、tool 和参数 schema 调用。";
+        var text = new StringBuilder();
+        text.AppendLine("DevSpaceManager 还挂载了以下已启用的本机 MCP。需要使用这些本机 MCP 能力时，先根据下面的 MCP 名称、描述和工具名判断相关能力，再调用 tool_search 搜索具体工具描述和参数 schema，最后用 call_mounted_tool 按返回的 server、tool 和 arguments 调用。");
+
+        foreach (var server in enabled.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var description = OneLine(server.Description);
+            text.AppendLine();
+            text.Append("- ");
+            text.Append(server.Name);
+            if (!string.IsNullOrWhiteSpace(description))
+            {
+                text.Append('：');
+                text.Append(description);
+            }
+
+            var tools = server.Tools
+                .Select(tool => tool.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (tools.Length > 0)
+            {
+                text.AppendLine();
+                text.Append("  工具：");
+                text.Append(string.Join(", ", tools));
+            }
+            else
+            {
+                text.Append("（尚未刷新工具列表）");
+            }
+        }
+
+        return text.ToString().TrimEnd();
     }
 
     public JsonObject ToolSearchDescriptor() => new()
@@ -215,11 +252,10 @@ internal sealed class MountedMcpService : IDisposable
         }
 
         EnsureEnabledTool(request.Server, request.Tool);
-        var result = await CallWithRestartAsync(request, cancellationToken);
-        return result;
+        return await CallMountedToolAsync(request, cancellationToken);
     }
 
-    private async Task<JsonObject> CallWithRestartAsync(MountedMcpCallRequest request, CancellationToken cancellationToken)
+    private async Task<JsonObject> CallMountedToolAsync(MountedMcpCallRequest request, CancellationToken cancellationToken)
     {
         var definition = FindDefinition(request.Server);
         if (!string.Equals(definition.Type, "stdio", StringComparison.OrdinalIgnoreCase))
@@ -228,24 +264,7 @@ internal sealed class MountedMcpService : IDisposable
         }
 
         var client = await GetClientAsync(definition, cancellationToken);
-        try
-        {
-            return await client.CallToolAsync(request.Tool, request.Arguments, cancellationToken);
-        }
-        catch (MountedMcpRemoteException)
-        {
-            throw;
-        }
-        catch (MountedMcpProtocolException)
-        {
-            throw;
-        }
-        catch (Exception) when (client.IsRunning == false)
-        {
-            await RestartClientAsync(definition.Name, cancellationToken);
-            client = await GetClientAsync(definition, cancellationToken);
-            return await client.CallToolAsync(request.Tool, request.Arguments, cancellationToken);
-        }
+        return await client.CallToolAsync(request.Tool, request.Arguments, cancellationToken);
     }
 
     private IReadOnlyList<MountedMcpSearchResult> Search(string query, int limit)
@@ -304,12 +323,15 @@ internal sealed class MountedMcpService : IDisposable
         }
     }
 
-    private async Task RestartClientAsync(string name, CancellationToken cancellationToken)
+    private async Task<Dictionary<string, StdioMcpClientSnapshot>> ClientSnapshotsAsync(CancellationToken cancellationToken)
     {
         await _lock.WaitAsync(cancellationToken);
         try
         {
-            if (_clients.Remove(name, out var existing)) existing.Dispose();
+            return _clients.ToDictionary(
+                item => item.Key,
+                item => item.Value.Snapshot,
+                StringComparer.OrdinalIgnoreCase);
         }
         finally
         {
@@ -421,11 +443,14 @@ internal sealed class MountedMcpService : IDisposable
 
     private static string FirstSentence(string text, int maxLength)
     {
-        text = text.ReplaceLineEndings(" ").Trim();
+        text = OneLine(text);
         var end = text.IndexOfAny(['.', '。', '\n']);
         if (end > 0) text = text[..(end + 1)];
         return text.Length <= maxLength ? text : text[..maxLength].TrimEnd() + "...";
     }
+
+    private static string OneLine(string text) =>
+        string.Join(" ", text.ReplaceLineEndings(" ").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     private static JsonObject McpContent(JsonObject payload) => new()
     {
