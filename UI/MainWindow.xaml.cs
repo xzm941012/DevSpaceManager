@@ -212,6 +212,7 @@ public sealed partial class MainWindow
         await chatGptView.EnsureCoreWebView2Async(env);
         chatGptView.CoreWebView2.Settings.AreDevToolsEnabled = true;
         chatGptView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        await ConfigureChatGptPageEnhancementsAsync(chatGptView.CoreWebView2);
         _chatGptTaskCompletionMonitor = new ChatGptTaskCompletionMonitor(_app);
         await _chatGptTaskCompletionMonitor.AttachAsync(chatGptView.CoreWebView2);
         if (!_chatGptEventsAttached)
@@ -256,6 +257,127 @@ public sealed partial class MainWindow
         _lastRequestedChatGptUri = "https://chatgpt.com";
         chatGptView.Source = new Uri(_lastRequestedChatGptUri);
         UpdateNavigationButtons();
+    }
+
+    private async Task ConfigureChatGptPageEnhancementsAsync(CoreWebView2 webView)
+    {
+        var config = _app.ConfigStore.Reload();
+        if (!config.CodexStyleEnhancementsEnabled)
+        {
+            return;
+        }
+
+        var cssParts = new List<string>();
+        if (config.CodexPageLayoutEnhancementsEnabled)
+        {
+            cssParts.Add("""
+            main#main:has([data-testid^="conversation-turn-"]) [class*="--thread-content-margin"] {
+              --thread-content-margin: 4rem !important;
+            }
+
+            main#main:has([data-testid^="conversation-turn-"]) [class*="--thread-content-max-width:40rem"] {
+              --thread-content-max-width: min(48rem, calc(100vw - 31rem)) !important;
+              max-width: var(--thread-content-max-width) !important;
+            }
+            """);
+        }
+
+        if (config.CodexInputBoxEnhancementsEnabled)
+        {
+            cssParts.Add("""
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) {
+              min-height: 98px !important;
+              border-radius: 18px !important;
+              padding: 8px 10px 6px !important;
+              grid-template-columns: auto minmax(0, 1fr) auto !important;
+              grid-template-rows: minmax(48px, auto) 36px !important;
+              grid-template-areas: "primary primary primary" "leading . trailing" !important;
+              align-items: stretch !important;
+              box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 0 0 1px rgba(0,0,0,.12) !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) > [class*="[grid-area:primary]"] {
+              min-height: 48px !important;
+              align-items: flex-start !important;
+              justify-content: flex-start !important;
+              margin-block: 0 !important;
+              padding: 0 3px 6px !important;
+              border-bottom: 0 !important;
+              overflow: auto !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) [class*="prosemirror-parent"]:has(#prompt-textarea),
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) #prompt-textarea {
+              align-self: flex-start !important;
+              margin-block: 0 !important;
+              text-align: left !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) #prompt-textarea {
+              min-height: 30px !important;
+              line-height: 1.5 !important;
+              padding-top: 0 !important;
+              padding-bottom: 0 !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) #prompt-textarea > p {
+              margin-top: 0 !important;
+              margin-bottom: 0 !important;
+              text-align: left !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) > [class*="[grid-area:leading]"],
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) > [class*="[grid-area:trailing]"] {
+              align-self: end !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) button[aria-label="启动语音功能"] {
+              width: 30px !important;
+              height: 30px !important;
+              min-width: 30px !important;
+              min-height: 30px !important;
+            }
+
+            form.group\/composer .shadow-short-composer:has(#prompt-textarea) button[aria-label="启动语音功能"] svg {
+              width: 18px !important;
+              height: 18px !important;
+            }
+            """);
+        }
+
+        if (cssParts.Count == 0)
+        {
+            return;
+        }
+
+        var css = string.Join(Environment.NewLine + Environment.NewLine, cssParts);
+        var script = $$"""
+            (() => {
+              const apply = () => {
+                if (!location.hostname.endsWith("chatgpt.com")) return;
+                const css = String.raw`
+            {{css}}
+            `;
+                const styleId = "devspace-codex-input-box-enhancement";
+                let style = document.getElementById(styleId);
+                if (!style) {
+                  style = document.createElement("style");
+                  style.id = styleId;
+                  document.head.appendChild(style);
+                }
+                if (style.textContent !== css) {
+                  style.textContent = css;
+                }
+              };
+
+              if (document.head) {
+                apply();
+              } else {
+                document.addEventListener("DOMContentLoaded", apply, { once: true });
+              }
+            })();
+            """;
+        await webView.AddScriptToExecuteOnDocumentCreatedAsync(script);
     }
 
     private WebView2 EnsureChatGptView()

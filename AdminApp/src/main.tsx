@@ -63,6 +63,8 @@ type PublicConfig = {
   localDebugPort: number;
   codexStyleEnhancementsEnabled: boolean;
   codexMessageNotificationsEnabled: boolean;
+  codexInputBoxEnhancementsEnabled?: boolean;
+  codexPageLayoutEnhancementsEnabled?: boolean;
   activeProfileId: string;
   profiles: PublicProfile[];
 };
@@ -199,6 +201,8 @@ function App() {
   const [startMinimizedToTray, setStartMinimizedToTray] = React.useState(false);
   const [codexStyleEnhancementsEnabled, setCodexStyleEnhancementsEnabled] = React.useState(false);
   const [codexMessageNotificationsEnabled, setCodexMessageNotificationsEnabled] = React.useState(false);
+  const [codexInputBoxEnhancementsEnabled, setCodexInputBoxEnhancementsEnabled] = React.useState(false);
+  const [codexPageLayoutEnhancementsEnabled, setCodexPageLayoutEnhancementsEnabled] = React.useState(false);
   const [overviewDetailOpen, setOverviewDetailOpen] = React.useState(false);
   const [mountedMcps, setMountedMcps] = React.useState<MountedMcpServer[]>([]);
   const [mcpLoading, setMcpLoading] = React.useState(false);
@@ -218,6 +222,8 @@ function App() {
       setStartMinimizedToTray(next.config.startMinimizedToTray);
       setCodexStyleEnhancementsEnabled(next.config.codexStyleEnhancementsEnabled);
       setCodexMessageNotificationsEnabled(next.config.codexMessageNotificationsEnabled);
+      setCodexInputBoxEnhancementsEnabled(next.config.codexInputBoxEnhancementsEnabled ?? false);
+      setCodexPageLayoutEnhancementsEnabled(next.config.codexPageLayoutEnhancementsEnabled ?? false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新失败");
     } finally {
@@ -414,18 +420,29 @@ function App() {
   }
 
   async function saveCodexEnhancementSetting(
-    next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>,
+    next: Partial<
+      Pick<
+        PublicConfig,
+        "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled" | "codexInputBoxEnhancementsEnabled" | "codexPageLayoutEnhancementsEnabled"
+      >
+    >,
   ) {
     const previousCodexStyleEnhancementsEnabled = codexStyleEnhancementsEnabled;
     const previousCodexMessageNotificationsEnabled = codexMessageNotificationsEnabled;
+    const previousCodexInputBoxEnhancementsEnabled = codexInputBoxEnhancementsEnabled;
+    const previousCodexPageLayoutEnhancementsEnabled = codexPageLayoutEnhancementsEnabled;
     const payload = {
       codexStyleEnhancementsEnabled,
       codexMessageNotificationsEnabled,
+      codexInputBoxEnhancementsEnabled,
+      codexPageLayoutEnhancementsEnabled,
       ...next,
     };
 
     setCodexStyleEnhancementsEnabled(payload.codexStyleEnhancementsEnabled);
     setCodexMessageNotificationsEnabled(payload.codexMessageNotificationsEnabled);
+    setCodexInputBoxEnhancementsEnabled(payload.codexInputBoxEnhancementsEnabled);
+    setCodexPageLayoutEnhancementsEnabled(payload.codexPageLayoutEnhancementsEnabled);
     setSaving(true);
     setError("");
     setToast("");
@@ -436,6 +453,8 @@ function App() {
     } catch (err) {
       setCodexStyleEnhancementsEnabled(previousCodexStyleEnhancementsEnabled);
       setCodexMessageNotificationsEnabled(previousCodexMessageNotificationsEnabled);
+      setCodexInputBoxEnhancementsEnabled(previousCodexInputBoxEnhancementsEnabled);
+      setCodexPageLayoutEnhancementsEnabled(previousCodexPageLayoutEnhancementsEnabled);
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
@@ -606,6 +625,8 @@ function App() {
                 startMinimizedToTray={startMinimizedToTray}
                 codexStyleEnhancementsEnabled={codexStyleEnhancementsEnabled}
                 codexMessageNotificationsEnabled={codexMessageNotificationsEnabled}
+                codexInputBoxEnhancementsEnabled={codexInputBoxEnhancementsEnabled}
+                codexPageLayoutEnhancementsEnabled={codexPageLayoutEnhancementsEnabled}
                 onStartupSettingChange={saveStartupSetting}
                 onCodexEnhancementSettingChange={saveCodexEnhancementSetting}
                 onDetailOpenChange={setOverviewDetailOpen}
@@ -680,6 +701,8 @@ function Overview({
   startMinimizedToTray,
   codexStyleEnhancementsEnabled,
   codexMessageNotificationsEnabled,
+  codexInputBoxEnhancementsEnabled,
+  codexPageLayoutEnhancementsEnabled,
   onStartupSettingChange,
   onCodexEnhancementSettingChange,
   onDetailOpenChange,
@@ -690,9 +713,16 @@ function Overview({
   startMinimizedToTray: boolean;
   codexStyleEnhancementsEnabled: boolean;
   codexMessageNotificationsEnabled: boolean;
+  codexInputBoxEnhancementsEnabled: boolean;
+  codexPageLayoutEnhancementsEnabled: boolean;
   onStartupSettingChange: (next: Partial<Pick<PublicConfig, "startWithWindows" | "startMinimizedToTray">>) => Promise<void>;
   onCodexEnhancementSettingChange: (
-    next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>,
+    next: Partial<
+      Pick<
+        PublicConfig,
+        "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled" | "codexInputBoxEnhancementsEnabled" | "codexPageLayoutEnhancementsEnabled"
+      >
+    >,
   ) => Promise<void>;
   onDetailOpenChange: (open: boolean) => void;
 }) {
@@ -771,6 +801,8 @@ function Overview({
         <div className="browser-view slide-in-right">
           <CodexEnhancementDetails
             messageNotificationsEnabled={codexMessageNotificationsEnabled}
+            inputBoxEnhancementsEnabled={codexInputBoxEnhancementsEnabled}
+            pageLayoutEnhancementsEnabled={codexPageLayoutEnhancementsEnabled}
             saving={saving}
             onBack={closeCodexDetails}
             onChange={onCodexEnhancementSettingChange}
@@ -783,14 +815,25 @@ function Overview({
 
 function CodexEnhancementDetails({
   messageNotificationsEnabled,
+  inputBoxEnhancementsEnabled,
+  pageLayoutEnhancementsEnabled,
   saving,
   onBack,
   onChange,
 }: {
   messageNotificationsEnabled: boolean;
+  inputBoxEnhancementsEnabled: boolean;
+  pageLayoutEnhancementsEnabled: boolean;
   saving: boolean;
   onBack: () => void;
-  onChange: (next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>) => Promise<void>;
+  onChange: (
+    next: Partial<
+      Pick<
+        PublicConfig,
+        "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled" | "codexInputBoxEnhancementsEnabled" | "codexPageLayoutEnhancementsEnabled"
+      >
+    >,
+  ) => Promise<void>;
 }) {
   return (
     <>
@@ -803,6 +846,28 @@ function CodexEnhancementDetails({
           checked={messageNotificationsEnabled}
           onChange={(value) => void onChange({ codexMessageNotificationsEnabled: value })}
           label="消息通知"
+          disabled={saving}
+        />
+      </SettingRow>
+      <SettingRow
+        title="输入框美化"
+        description="将 ChatGPT 输入框调整为 Codex 风格的高矩形，上方为独立编辑区，下方保留原有工具按钮。"
+      >
+        <Switch
+          checked={inputBoxEnhancementsEnabled}
+          onChange={(value) => void onChange({ codexInputBoxEnhancementsEnabled: value })}
+          label="输入框美化"
+          disabled={saving}
+        />
+      </SettingRow>
+      <SettingRow
+        title="页面美化"
+        description="放宽已有会话的正文和底部输入框宽度，减少左右留白，更接近 Codex 阅读区域。"
+      >
+        <Switch
+          checked={pageLayoutEnhancementsEnabled}
+          onChange={(value) => void onChange({ codexPageLayoutEnhancementsEnabled: value })}
+          label="页面美化"
           disabled={saving}
         />
       </SettingRow>

@@ -344,6 +344,9 @@ internal sealed class AdminBridgeService
     private async Task<object> SaveCodexEnhancementsAsync(JsonElement payload)
     {
         var config = _app.ConfigStore.Reload();
+        var previousStyleEnhancementsEnabled = config.CodexStyleEnhancementsEnabled;
+        var previousInputBoxEnhancementsEnabled = config.CodexInputBoxEnhancementsEnabled;
+        var previousPageLayoutEnhancementsEnabled = config.CodexPageLayoutEnhancementsEnabled;
         if (payload.TryGetProperty("codexStyleEnhancementsEnabled", out var enabled))
         {
             config.CodexStyleEnhancementsEnabled = enabled.GetBoolean();
@@ -354,8 +357,32 @@ internal sealed class AdminBridgeService
             config.CodexMessageNotificationsEnabled = notificationsEnabled.GetBoolean();
         }
 
+        if (payload.TryGetProperty("codexInputBoxEnhancementsEnabled", out var inputBoxEnabled))
+        {
+            config.CodexInputBoxEnhancementsEnabled = inputBoxEnabled.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("codexPageLayoutEnhancementsEnabled", out var pageLayoutEnabled))
+        {
+            config.CodexPageLayoutEnhancementsEnabled = pageLayoutEnabled.GetBoolean();
+        }
+
         _app.ConfigStore.Save(config);
-        await Task.CompletedTask;
+        if (_reloadChatGptView is not null &&
+            (previousStyleEnhancementsEnabled != config.CodexStyleEnhancementsEnabled ||
+             previousInputBoxEnhancementsEnabled != config.CodexInputBoxEnhancementsEnabled ||
+             previousPageLayoutEnhancementsEnabled != config.CodexPageLayoutEnhancementsEnabled))
+        {
+            try
+            {
+                await _reloadChatGptView();
+            }
+            catch (Exception ex)
+            {
+                Log.App($"Failed to reload ChatGPT view after Codex enhancement change: {ex}");
+            }
+        }
+
         return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
     }
 
@@ -447,6 +474,8 @@ internal sealed class AdminBridgeService
         config.LocalDebugPort,
         config.CodexStyleEnhancementsEnabled,
         config.CodexMessageNotificationsEnabled,
+        config.CodexInputBoxEnhancementsEnabled,
+        config.CodexPageLayoutEnhancementsEnabled,
         activeProfileId = config.ActiveBrowserProfileId,
         profiles = config.BrowserProfiles.Select(PublicProfile).ToArray()
     };

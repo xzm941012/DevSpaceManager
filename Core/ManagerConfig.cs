@@ -48,6 +48,8 @@ internal sealed class ManagerConfig
     public int LocalDebugPort { get; set; } = 9223;
     public bool CodexStyleEnhancementsEnabled { get; set; }
     public bool CodexMessageNotificationsEnabled { get; set; }
+    public bool CodexInputBoxEnhancementsEnabled { get; set; }
+    public bool CodexPageLayoutEnhancementsEnabled { get; set; }
     public List<MountedMcpConfig> MountedMcps { get; set; } = [];
     public List<SshProfileConfig> SshProfiles { get; set; } = [];
 
