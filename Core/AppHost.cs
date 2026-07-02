@@ -8,6 +8,7 @@ internal sealed class AppHost : IDisposable
     public ManagedProcessService Processes { get; }
     public McpRequestMonitor RequestMonitor { get; }
     public MountedMcpService MountedMcps { get; }
+    public SshProfileService SshProfiles { get; }
     public McpProxyService McpProxy { get; }
     public PublicEndpointSyncService PublicEndpoints { get; }
     public HealthService Health { get; }
@@ -17,12 +18,14 @@ internal sealed class AppHost : IDisposable
     public UpdateService Updates { get; }
     public SchedulerService Scheduler { get; }
     public WorkerService Worker { get; }
+    public event EventHandler<NativeNotification>? NativeNotificationRequested;
 
     private AppHost()
     {
         ConfigStore = new ManagerConfigStore();
         RequestMonitor = new McpRequestMonitor();
         MountedMcps = new MountedMcpService(ConfigStore);
+        SshProfiles = new SshProfileService(ConfigStore);
         McpProxy = new McpProxyService(ConfigStore, RequestMonitor, MountedMcps);
         PublicEndpoints = new PublicEndpointSyncService(ConfigStore);
         Health = new HealthService(ConfigStore);
@@ -37,6 +40,11 @@ internal sealed class AppHost : IDisposable
 
     public static AppHost Create() => new();
 
+    public void RequestNativeNotification(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
+    {
+        NativeNotificationRequested?.Invoke(this, new NativeNotification(title, message, icon));
+    }
+
     public void Dispose()
     {
         Processes.Dispose();
@@ -44,3 +52,5 @@ internal sealed class AppHost : IDisposable
         MountedMcps.Dispose();
     }
 }
+
+internal sealed record NativeNotification(string Title, string Message, ToolTipIcon Icon);

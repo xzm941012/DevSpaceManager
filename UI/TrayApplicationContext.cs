@@ -53,6 +53,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         };
         _tray.DoubleClick += (_, _) => ShowMainWindow();
+        _tray.BalloonTipClicked += (_, _) => ShowMainWindow();
+        _app.NativeNotificationRequested += OnNativeNotificationRequested;
 
         _timer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _timer.Tick += async (_, _) =>
@@ -73,6 +75,40 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _ = StartBackgroundServicesAsync();
         };
         _startupTimer.Start();
+    }
+
+    private void OnNativeNotificationRequested(object? sender, NativeNotification notification)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (!ShouldShowNativeNotification())
+            {
+                return;
+            }
+
+            _tray.ShowBalloonTip(5000, notification.Title, notification.Message, notification.Icon);
+        });
+    }
+
+    private bool ShouldShowNativeNotification()
+    {
+        if (_mainWindow is null)
+        {
+            return false;
+        }
+
+        return !_mainWindow.IsVisible ||
+               _mainWindow.WindowState == System.Windows.WindowState.Minimized;
     }
 
     private async Task StartBackgroundServicesAsync()
@@ -689,6 +725,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _disposed = true;
             _exiting = true;
+            _app.NativeNotificationRequested -= OnNativeNotificationRequested;
             try
             {
                 _backgroundWorkerCts.Cancel();

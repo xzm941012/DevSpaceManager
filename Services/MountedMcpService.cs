@@ -63,7 +63,7 @@ internal sealed class MountedMcpService : IDisposable
         var definitions = _discovery.Discover();
         if (definitions.All(item => !string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
         {
-            throw new InvalidOperationException("未找到 MCP。");
+            throw new InvalidOperationException("MCP server not found.");
         }
 
         var config = _configStore.Reload();
@@ -79,7 +79,7 @@ internal sealed class MountedMcpService : IDisposable
         var definition = FindDefinition(name);
         if (!string.Equals(definition.Type, "stdio", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("当前仅支持 stdio 类型 MCP。");
+            throw new InvalidOperationException("Only stdio MCP servers are currently supported.");
         }
 
         var client = await GetClientAsync(definition, cancellationToken);
@@ -115,7 +115,11 @@ internal sealed class MountedMcpService : IDisposable
         if (enabled.Length == 0) return "";
 
         var text = new StringBuilder();
-        text.AppendLine("DevSpaceManager 还挂载了以下已启用的本机 MCP。需要使用这些本机 MCP 能力时，先根据下面的 MCP 名称、描述和工具名判断相关能力，再调用 tool_search 搜索具体工具描述和参数 schema，最后用 call_mounted_tool 按返回的 server、tool 和 arguments 调用。");
+        text.AppendLine("DevSpaceManager also mounts the following enabled local MCP servers. Use tool_search and call_mounted_tool when a task needs these local MCP capabilities.");
+        text.AppendLine();
+        text.AppendLine("If an MCP server is marked as having instructions and those instructions have not been loaded in the current context, you can call:");
+        text.AppendLine("tool_search(mode=\"server\", query=\"<mcp-name>\")");
+        text.AppendLine("to get that MCP server's server instructions.");
 
         foreach (var server in enabled.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
         {
@@ -125,9 +129,13 @@ internal sealed class MountedMcpService : IDisposable
             text.Append(server.Name);
             if (!string.IsNullOrWhiteSpace(description))
             {
-                text.Append('：');
+                text.Append(": ");
                 text.Append(description);
             }
+
+            text.AppendLine();
+            text.Append("  instructions: ");
+            text.Append(string.IsNullOrWhiteSpace(server.Instructions) ? "no" : "yes");
 
             var tools = server.Tools
                 .Select(tool => tool.Name)
@@ -137,12 +145,13 @@ internal sealed class MountedMcpService : IDisposable
             if (tools.Length > 0)
             {
                 text.AppendLine();
-                text.Append("  工具：");
+                text.Append("  tools: ");
                 text.Append(string.Join(", ", tools));
             }
             else
             {
-                text.Append("（尚未刷新工具列表）");
+                text.AppendLine();
+                text.Append("  tools: not refreshed yet");
             }
         }
 
@@ -153,7 +162,7 @@ internal sealed class MountedMcpService : IDisposable
     {
         ["name"] = "tool_search",
         ["title"] = "Search mounted MCP tools",
-        ["description"] = "Search deferred metadata for currently enabled DevSpaceManager-mounted local MCP tools. Use this before calling a mounted local MCP tool.",
+        ["description"] = "Search deferred metadata for currently enabled DevSpaceManager-mounted local MCP servers. In tools mode, search for matching tools and their input schemas before calling call_mounted_tool. In server mode, pass an exact MCP server name to get that server's instructions.",
         ["inputSchema"] = new JsonObject
         {
             ["$schema"] = "http://json-schema.org/draft-07/schema#",
@@ -163,7 +172,13 @@ internal sealed class MountedMcpService : IDisposable
                 ["query"] = new JsonObject
                 {
                     ["type"] = "string",
-                    ["description"] = "Capability or tool to search for."
+                    ["description"] = "Capability, tool, or exact MCP server name to search for."
+                },
+                ["mode"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JsonArray("tools", "server"),
+                    ["description"] = "Use \"tools\" to search mounted tool metadata, or \"server\" to return server instructions for an exact MCP server name. Defaults to \"tools\"."
                 },
                 ["limit"] = new JsonObject
                 {
@@ -176,22 +191,21 @@ internal sealed class MountedMcpService : IDisposable
             ["required"] = new JsonArray("query"),
             ["additionalProperties"] = false
         },
+        ["outputSchema"] = ToolSearchOutputSchema(),
         ["annotations"] = new JsonObject
         {
             ["readOnlyHint"] = true,
             ["destructiveHint"] = false,
             ["idempotentHint"] = true,
             ["openWorldHint"] = false
-        },
-        ["securitySchemes"] = DevSpaceSecuritySchemes(),
-        ["_meta"] = DevSpaceToolMeta()
+        }
     };
 
     public JsonObject CallMountedToolDescriptor() => new()
     {
         ["name"] = "call_mounted_tool",
         ["title"] = "Call mounted MCP tool",
-        ["description"] = "Call a tool from an enabled DevSpaceManager-mounted local MCP server. First use tool_search to find the server, tool name, and input schema.",
+        ["description"] = "Call a tool from an enabled DevSpaceManager-mounted local MCP server. You can use tool_search to find the server, tool name, and input schema.",
         ["inputSchema"] = new JsonObject
         {
             ["$schema"] = "http://json-schema.org/draft-07/schema#",
@@ -205,28 +219,37 @@ internal sealed class MountedMcpService : IDisposable
             ["required"] = new JsonArray("server", "tool"),
             ["additionalProperties"] = false
         },
+        ["outputSchema"] = MountedToolOutputSchema(),
         ["annotations"] = new JsonObject
         {
             ["readOnlyHint"] = false,
             ["destructiveHint"] = false,
             ["idempotentHint"] = false,
             ["openWorldHint"] = true
-        },
-        ["securitySchemes"] = DevSpaceSecuritySchemes(),
-        ["_meta"] = DevSpaceToolMeta()
+        }
     };
 
     public JsonObject SearchForMcpResult(JsonObject arguments)
     {
         var query = arguments["query"]?.GetValue<string>()?.Trim() ?? "";
+        var mode = arguments["mode"]?.GetValue<string>()?.Trim() ?? "tools";
+        if (string.Equals(mode, "server", StringComparison.OrdinalIgnoreCase))
+        {
+            return SearchServerInstructionsForMcpResult(query);
+        }
+
+        if (!string.Equals(mode, "tools", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("mode must be either \"tools\" or \"server\".");
+        }
+
         var limit = 8;
         if (arguments["limit"] is JsonValue limitValue && limitValue.TryGetValue<int>(out var requestedLimit))
         {
             limit = Math.Clamp(requestedLimit, 1, 20);
         }
         var results = Search(query, limit);
-        LogToolSearch(query, limit, results);
-        return McpContent(new JsonObject
+        var payload = new JsonObject
         {
             ["query"] = query,
             ["results"] = new JsonArray(results.Select(result => new JsonObject
@@ -237,7 +260,29 @@ internal sealed class MountedMcpService : IDisposable
                 ["score"] = result.Score,
                 ["inputSchema"] = result.InputSchema.DeepClone()
             }).ToArray<JsonNode?>())
-        });
+        };
+        return McpContent(payload);
+    }
+
+    private JsonObject SearchServerInstructionsForMcpResult(string serverName)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            throw new InvalidOperationException("query must be an exact MCP server name when mode is \"server\".");
+        }
+
+        var server = EnabledCachedServers()
+            .FirstOrDefault(item => string.Equals(item.Name, serverName, StringComparison.OrdinalIgnoreCase));
+        if (server is null)
+        {
+            throw new InvalidOperationException("No enabled mounted MCP server matched the query.");
+        }
+
+        var payload = new JsonObject
+        {
+            ["instructions"] = server.Instructions
+        };
+        return McpContent(payload);
     }
 
     public async Task<JsonObject> CallMountedToolForMcpResultAsync(JsonObject arguments, CancellationToken cancellationToken)
@@ -249,7 +294,7 @@ internal sealed class MountedMcpService : IDisposable
 
         if (string.IsNullOrWhiteSpace(request.Server) || string.IsNullOrWhiteSpace(request.Tool))
         {
-            throw new InvalidOperationException("server 和 tool 不能为空。");
+            throw new InvalidOperationException("server and tool are required.");
         }
 
         EnsureEnabledTool(request.Server, request.Tool);
@@ -261,7 +306,7 @@ internal sealed class MountedMcpService : IDisposable
         var definition = FindDefinition(request.Server);
         if (!string.Equals(definition.Type, "stdio", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("当前仅支持 stdio 类型 MCP。");
+            throw new InvalidOperationException("Only stdio MCP servers are currently supported.");
         }
 
         var client = await GetClientAsync(definition, cancellationToken);
@@ -288,14 +333,6 @@ internal sealed class MountedMcpService : IDisposable
             .ToArray();
     }
 
-    private static void LogToolSearch(string query, int limit, IReadOnlyList<MountedMcpSearchResult> results)
-    {
-        var top = results.Count == 0
-            ? "none"
-            : string.Join(", ", results.Take(8).Select(item => $"{item.Server}.{item.Tool}:{item.Score}"));
-        Log.App($"Mounted MCP tool_search query=\"{LogText(query, 160)}\" limit={limit} results={results.Count} top={top}");
-    }
-
     private IEnumerable<MountedMcpServerCache> EnabledCachedServers()
     {
         var config = _configStore.Reload();
@@ -306,12 +343,12 @@ internal sealed class MountedMcpService : IDisposable
     private void EnsureEnabledTool(string server, string tool)
     {
         var config = _configStore.Reload();
-        if (!IsEnabled(config, server)) throw new InvalidOperationException("该 MCP 未启用。");
+        if (!IsEnabled(config, server)) throw new InvalidOperationException("This mounted MCP server is not enabled.");
 
         var cache = LoadCaches().GetValueOrDefault(server);
         if (cache?.Tools.Any(item => string.Equals(item.Name, tool, StringComparison.OrdinalIgnoreCase)) != true)
         {
-            throw new InvalidOperationException("该工具未在本地缓存中登记，请先刷新工具列表。");
+            throw new InvalidOperationException("This tool is not registered in the local MCP cache. Refresh the tool list first.");
         }
     }
 
@@ -350,7 +387,7 @@ internal sealed class MountedMcpService : IDisposable
 
     private MountedMcpDefinition FindDefinition(string name) =>
         _discovery.Discover().FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))
-        ?? throw new InvalidOperationException("未找到 MCP。");
+        ?? throw new InvalidOperationException("MCP server not found.");
 
     private static bool EnsureConfigRecords(ManagerConfig config, IReadOnlyList<MountedMcpDefinition> definitions)
     {
@@ -373,11 +410,11 @@ internal sealed class MountedMcpService : IDisposable
         if (!string.IsNullOrWhiteSpace(cache?.Description)) return cache.Description;
         return definition.Name switch
         {
-            "chrome-devtools" => "控制本机 Chrome DevTools，用于页面检查、交互和调试。",
-            "playwright" => "通过 Playwright 操作浏览器、页面和自动化测试流程。",
-            "node_repl" => "在持久 Node.js 运行时中执行 JavaScript，适合脚本、浏览器桥接和快速实验。",
-            "pencil" => "读写 Pencil 设计文件，生成、检查和导出设计节点。",
-            _ => $"{definition.Type} MCP：{DisplayCommand(definition)}"
+            "chrome-devtools" => "Control local Chrome DevTools for page inspection, interaction, and debugging.",
+            "playwright" => "Use Playwright to control browsers, pages, and browser automation workflows.",
+            "node_repl" => "Run JavaScript in a persistent Node.js runtime for scripts, browser bridges, and quick experiments.",
+            "pencil" => "Read and write Pencil design files, generate and inspect design nodes, and export designs.",
+            _ => $"{definition.Type} MCP: {DisplayCommand(definition)}"
         };
     }
 
@@ -437,6 +474,96 @@ internal sealed class MountedMcpService : IDisposable
         tool.InputSchema
     };
 
+    private static JsonObject ToolSearchOutputSchema() => new()
+    {
+        ["type"] = "object",
+        ["description"] = "Structured result for tool_search. In tools mode it contains query and matching mounted MCP tools. In server mode it contains instructions for one MCP server.",
+        ["properties"] = new JsonObject
+        {
+            ["query"] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "Search query used in tools mode."
+            },
+            ["results"] = new JsonObject
+            {
+                ["type"] = "array",
+                ["description"] = "Matching mounted MCP tools returned in tools mode.",
+                ["items"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["server"] = new JsonObject { ["type"] = "string", ["description"] = "Mounted MCP server name." },
+                        ["tool"] = new JsonObject { ["type"] = "string", ["description"] = "Tool name on that MCP server." },
+                        ["description"] = new JsonObject { ["type"] = "string", ["description"] = "Tool description." },
+                        ["score"] = new JsonObject { ["type"] = "number", ["description"] = "Search relevance score." },
+                        ["inputSchema"] = new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["description"] = "JSON schema for arguments to pass to call_mounted_tool.",
+                            ["additionalProperties"] = true
+                        }
+                    },
+                    ["required"] = new JsonArray("server", "tool", "description", "score", "inputSchema"),
+                    ["additionalProperties"] = false
+                }
+            },
+            ["instructions"] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "Server instructions returned in server mode."
+            }
+        },
+        ["additionalProperties"] = true
+    };
+
+    private static JsonObject MountedToolOutputSchema() => new()
+    {
+        ["type"] = "object",
+        ["description"] = "Result returned by the mounted MCP server tool. The shape depends on the target MCP tool and may include text/image/resource content, structuredContent, and isError.",
+        ["properties"] = new JsonObject
+        {
+            ["content"] = ContentArraySchema(),
+            ["structuredContent"] = new JsonObject
+            {
+                ["type"] = "object",
+                ["description"] = "Optional structured result returned by the mounted MCP tool.",
+                ["additionalProperties"] = true
+            },
+            ["isError"] = new JsonObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "Whether the mounted MCP tool reported an error result."
+            }
+        },
+        ["additionalProperties"] = true
+    };
+
+    private static JsonObject ContentArraySchema() => new()
+    {
+        ["type"] = "array",
+        ["description"] = "MCP content items returned by the tool.",
+        ["items"] = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["type"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "MCP content item type such as text, image, or resource."
+                },
+                ["text"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "Text content. tool_search returns JSON in this field."
+                }
+            },
+            ["additionalProperties"] = true
+        }
+    };
+
     private static string DisplayCommand(MountedMcpDefinition definition)
     {
         var command = definition.Args.Count == 0
@@ -461,37 +588,22 @@ internal sealed class MountedMcpService : IDisposable
     private static string OneLine(string text) =>
         string.Join(" ", text.ReplaceLineEndings(" ").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-    private static string LogText(string text, int maxLength)
+    private static JsonObject McpContent(JsonObject payload)
     {
-        text = OneLine(text).Replace("\"", "\\\"");
-        return text.Length <= maxLength ? text : text[..maxLength].TrimEnd() + "...";
-    }
-
-    private static JsonObject McpContent(JsonObject payload) => new()
-    {
-        ["content"] = new JsonArray
+        var textPayload = payload.DeepClone().ToJsonString(JsonOptions);
+        return new JsonObject
         {
-            new JsonObject
+            ["content"] = new JsonArray
             {
-                ["type"] = "text",
-                ["text"] = payload.ToJsonString(JsonOptions)
-            }
-        }
-    };
-
-    private static JsonArray DevSpaceSecuritySchemes() => new()
-    {
-        new JsonObject
-        {
-            ["type"] = "oauth2",
-            ["scopes"] = new JsonArray("devspace")
-        }
-    };
-
-    private static JsonObject DevSpaceToolMeta() => new()
-    {
-        ["securitySchemes"] = DevSpaceSecuritySchemes()
-    };
+                new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = textPayload
+                }
+            },
+            ["structuredContent"] = payload.DeepClone()
+        };
+    }
 
     public void Dispose()
     {

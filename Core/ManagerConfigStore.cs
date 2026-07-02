@@ -128,6 +128,28 @@ internal sealed class ManagerConfigStore
             ? config.LocalDebugPort
             : 9223;
         config.MountedMcps ??= [];
+        config.SshProfiles ??= [];
+        foreach (var profile in config.SshProfiles)
+        {
+            profile.Id = Blank(profile.Id) ? CreateStableId(profile.Name) : profile.Id.Trim();
+            profile.Name = Blank(profile.Name) ? profile.Id : profile.Name.Trim();
+            MigrateSshPlaintext(profile);
+            profile.EncryptedHost = profile.EncryptedHost.Trim();
+            profile.EncryptedPort = profile.EncryptedPort.Trim();
+            profile.EncryptedUsername = profile.EncryptedUsername.Trim();
+            profile.EncryptedPassword = profile.EncryptedPassword.Trim();
+            if (Blank(profile.EncryptedPort))
+            {
+                profile.EncryptedPort = SshSecretProtector.Protect("22");
+            }
+            profile.SecurityMode = NormalizeSshSecurityMode(profile.SecurityMode);
+            profile.PolicyTemplate = NormalizeSshPolicyTemplate(profile.PolicyTemplate);
+            profile.AllowPatterns ??= [];
+            profile.DenyPatterns ??= [];
+            profile.IdleTimeoutMinutes = profile.IdleTimeoutMinutes is >= 1 and <= 1440 ? profile.IdleTimeoutMinutes : 30;
+            profile.CommandTimeoutSeconds = profile.CommandTimeoutSeconds is >= 1 and <= 3600 ? profile.CommandTimeoutSeconds : 60;
+            profile.MaxOutputBytes = profile.MaxOutputBytes is >= 4096 and <= 4 * 1024 * 1024 ? profile.MaxOutputBytes : 128 * 1024;
+        }
         config.UpdateCheckHours = config.UpdateCheckHours is >= 1 and <= 168
             ? config.UpdateCheckHours
             : 24;
@@ -175,6 +197,38 @@ internal sealed class ManagerConfigStore
         return config;
     }
 
+    private static void MigrateSshPlaintext(SshProfileConfig profile)
+    {
+        var legacyHost = SshSecretProtector.TakeLegacyPlaintext(profile, "Host").Trim();
+        if (!Blank(legacyHost) && Blank(profile.EncryptedHost))
+        {
+            profile.EncryptedHost = SshSecretProtector.Protect(legacyHost);
+        }
+
+        var legacyPort = SshSecretProtector.TakeLegacyInt(profile, "Port");
+        if (legacyPort is >= 1 and <= 65535 && Blank(profile.EncryptedPort))
+        {
+            profile.EncryptedPort = SshSecretProtector.Protect(legacyPort.Value.ToString());
+        }
+
+        var legacyUsername = SshSecretProtector.TakeLegacyPlaintext(profile, "Username").Trim();
+        if (!Blank(legacyUsername) && Blank(profile.EncryptedUsername))
+        {
+            profile.EncryptedUsername = SshSecretProtector.Protect(legacyUsername);
+        }
+
+        var legacyPassword = SshSecretProtector.TakeLegacyPlaintext(profile, "Password");
+        if (!Blank(legacyPassword) && Blank(profile.EncryptedPassword))
+        {
+            profile.EncryptedPassword = SshSecretProtector.Protect(legacyPassword);
+        }
+
+        if (profile.LegacyPlaintextFields?.Count == 0)
+        {
+            profile.LegacyPlaintextFields = null;
+        }
+    }
+
     private static string DefaultTunnelName()
     {
         var machine = Environment.MachineName.ToLowerInvariant();
@@ -203,6 +257,27 @@ internal sealed class ManagerConfigStore
     {
         var normalized = value?.Trim().ToLowerInvariant();
         return normalized is "full" or "changes" or "off" ? normalized : "off";
+    }
+
+    private static string NormalizeSshSecurityMode(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "readonly" or "restricted" or "unrestricted" ? normalized : "restricted";
+    }
+
+    private static string NormalizeSshPolicyTemplate(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "inspection" or "logs" or "custom" ? normalized : "inspection";
+    }
+
+    private static string CreateStableId(string value)
+    {
+        var id = new string((value ?? "").Trim().ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-')
+            .ToArray())
+            .Trim('-');
+        return string.IsNullOrWhiteSpace(id) ? $"ssh-{Guid.NewGuid():N}"[..12] : id;
     }
 
     private static string NormalizeToolMode(string value)

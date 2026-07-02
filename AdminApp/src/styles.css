@@ -141,6 +141,13 @@ button {
   padding: 13px 0 12px;
 }
 
+.toolbar-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .toolbar-title {
   color: #242421;
   font-size: 14px;
@@ -153,6 +160,17 @@ button {
   color: #777770;
   font-size: 12px;
   line-height: 17px;
+}
+
+.ssh-toolbar {
+  min-height: 74px;
+  padding-top: 0;
+  padding-bottom: 18px;
+}
+
+.ssh-toolbar-title {
+  font-size: 18px;
+  line-height: 24px;
 }
 
 .profile-list {
@@ -235,6 +253,20 @@ button {
   flex: 0 0 auto;
 }
 
+.ssh-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+}
+
+.ssh-actions {
+  flex: 0 0 118px;
+  display: grid;
+  grid-template-columns: 38px 32px 32px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .tool-list {
   display: grid;
 }
@@ -258,6 +290,55 @@ button {
   font-size: 12px;
   line-height: 17px;
   overflow-wrap: anywhere;
+}
+
+.mcp-instructions {
+  border-bottom: 1px solid #eeeeeb;
+}
+
+.mcp-instructions-toggle {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border: 0;
+  background: transparent;
+  padding: 13px 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mcp-instructions-toggle:hover .setting-title {
+  color: #111111;
+}
+
+.mcp-instructions-icon {
+  flex: 0 0 auto;
+  color: #777770;
+  transition: transform 150ms ease;
+}
+
+.mcp-instructions-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.mcp-instructions-body {
+  max-height: 360px;
+  margin: 0 0 14px;
+  overflow: auto;
+  border: 1px solid #eeeeeb;
+  border-radius: 7px;
+  background: #fafaf8;
+  padding: 12px;
+  color: #3c3c38;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .subpage-header {
@@ -319,6 +400,13 @@ button {
   justify-content: flex-end;
   gap: 8px;
   color: #686862;
+}
+
+.codex-setting-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .edit-row {
@@ -430,7 +518,8 @@ button {
 }
 
 .number-input,
-.text-input {
+.text-input,
+.select-input {
   width: 96px;
   height: 32px;
   border: 1px solid #d9d9d4;
@@ -453,8 +542,31 @@ button {
   width: min(100%, 480px);
 }
 
+.select-input {
+  width: 150px;
+}
+
+.select-input.wide {
+  width: min(100%, 260px);
+}
+
+.textarea-input {
+  width: min(100%, 480px);
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid #d9d9d4;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 8px 10px;
+  color: #20201d;
+  font: inherit;
+  outline: none;
+}
+
 .number-input:focus,
-.text-input:focus {
+.text-input:focus,
+.select-input:focus,
+.textarea-input:focus {
   border-color: #9f9f98;
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
 }
@@ -552,6 +664,14 @@ button {
   padding: 10px 12px;
 }
 
+.soft-note {
+  border-bottom: 1px solid #eeeeeb;
+  color: #777770;
+  font-size: 12px;
+  line-height: 17px;
+  padding: 10px 0;
+}
+
 .empty-state {
   margin-top: 20px;
   color: #777770;
@@ -615,6 +735,21 @@ button {
   .profile-actions {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ssh-row,
+  .mcp-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ssh-actions,
+  .mcp-actions {
+    justify-content: flex-start;
   }
 
   .edit-row {

@@ -10,6 +10,14 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Any(arg => string.Equals(arg, "--ssh-mcp", StringComparison.OrdinalIgnoreCase)))
+        {
+            var configStore = new ManagerConfigStore();
+            using var server = new SshMcpServer(configStore);
+            server.RunAsync().GetAwaiter().GetResult();
+            return 0;
+        }
+
         if (args.Any(arg => string.Equals(arg, "--worker", StringComparison.OrdinalIgnoreCase)))
         {
             using var workerApp = AppHost.Create();

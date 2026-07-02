@@ -25,6 +25,7 @@ public sealed partial class MainWindow
     private SettingsWindow? _settingsWindow;
     private EnvironmentSetupWindow? _environmentSetupWindow;
     private WebView2? _chatGptView;
+    private ChatGptTaskCompletionMonitor? _chatGptTaskCompletionMonitor;
     private bool _chatGptEventsAttached;
     private bool _isInitialChatGptLoad = true;
     private bool _initialLoadStarted;
@@ -211,6 +212,8 @@ public sealed partial class MainWindow
         await chatGptView.EnsureCoreWebView2Async(env);
         chatGptView.CoreWebView2.Settings.AreDevToolsEnabled = true;
         chatGptView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        _chatGptTaskCompletionMonitor = new ChatGptTaskCompletionMonitor(_app);
+        await _chatGptTaskCompletionMonitor.AttachAsync(chatGptView.CoreWebView2);
         if (!_chatGptEventsAttached)
         {
             chatGptView.CoreWebView2.NavigationStarting += (_, args) =>
@@ -279,6 +282,8 @@ public sealed partial class MainWindow
         }
 
         ChatGptHost.Children.Remove(_chatGptView);
+        _chatGptTaskCompletionMonitor?.Dispose();
+        _chatGptTaskCompletionMonitor = null;
         _chatGptView.Dispose();
         _chatGptView = null;
         _chatGptEventsAttached = false;

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace DevSpaceManager.Core;
@@ -45,7 +46,10 @@ internal sealed class ManagerConfig
     public List<BrowserProfileConfig> BrowserProfiles { get; set; } = [];
     public bool LocalDebugEnabled { get; set; }
     public int LocalDebugPort { get; set; } = 9223;
+    public bool CodexStyleEnhancementsEnabled { get; set; }
+    public bool CodexMessageNotificationsEnabled { get; set; }
     public List<MountedMcpConfig> MountedMcps { get; set; } = [];
+    public List<SshProfileConfig> SshProfiles { get; set; } = [];
 
     [JsonIgnore]
     public string DevSpaceStdoutLog => Path.Combine(AppPaths.LogDirectory, "devspace.out.log");
@@ -67,4 +71,28 @@ internal sealed class MountedMcpConfig
 {
     public string Name { get; set; } = "";
     public bool Enabled { get; set; }
+}
+
+internal sealed class SshProfileConfig : DevSpaceManager.Services.ISshPolicySubject
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string EncryptedHost { get; set; } = "";
+    public string EncryptedPort { get; set; } = "";
+    public string EncryptedUsername { get; set; } = "";
+    public string EncryptedPassword { get; set; } = "";
+    public bool AiEnabled { get; set; } = true;
+    public string SecurityMode { get; set; } = "restricted";
+    public string PolicyTemplate { get; set; } = "inspection";
+    public List<string> AllowPatterns { get; set; } = [];
+    public List<string> DenyPatterns { get; set; } = [];
+    public int IdleTimeoutMinutes { get; set; } = 30;
+    public int CommandTimeoutSeconds { get; set; } = 60;
+    public int MaxOutputBytes { get; set; } = 128 * 1024;
+    public string Description { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.Now;
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? LegacyPlaintextFields { get; set; }
 }

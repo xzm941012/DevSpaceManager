@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Bug,
   CheckCircle2,
+  ChevronDown,
   Eye,
   EyeOff,
   RotateCw,
@@ -18,7 +19,9 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Server,
   Settings,
+  ShieldCheck,
   TerminalSquare,
   Trash2,
 } from "lucide-react";
@@ -58,6 +61,8 @@ type PublicConfig = {
   autoRestart: boolean;
   localDebugEnabled: boolean;
   localDebugPort: number;
+  codexStyleEnhancementsEnabled: boolean;
+  codexMessageNotificationsEnabled: boolean;
   activeProfileId: string;
   profiles: PublicProfile[];
 };
@@ -100,7 +105,56 @@ type MountedMcpList = {
   servers: MountedMcpServer[];
 };
 
-type SectionKey = "overview" | "browser" | "mcp" | "proxy" | "debug" | "logs";
+type SshPolicyTemplate = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+type SshProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  passwordConfigured: boolean;
+  aiEnabled: boolean;
+  securityMode: "readonly" | "restricted" | "unrestricted";
+  policyTemplate: string;
+  allowPatterns: string[];
+  denyPatterns: string[];
+  description: string;
+  idleTimeoutMinutes: number;
+  commandTimeoutSeconds: number;
+  maxOutputBytes: number;
+};
+
+type SshList = {
+  installed: boolean;
+  codexConfigPath: string;
+  templates: SshPolicyTemplate[];
+  profiles: SshProfile[];
+};
+
+type SshDraft = {
+  id?: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  aiEnabled: boolean;
+  securityMode: "readonly" | "restricted" | "unrestricted";
+  policyTemplate: string;
+  allowPatterns: string[];
+  denyPatterns: string[];
+  description: string;
+  idleTimeoutMinutes: number;
+  commandTimeoutSeconds: number;
+  maxOutputBytes: number;
+};
+
+type SectionKey = "overview" | "browser" | "mcp" | "ssh" | "proxy" | "debug" | "logs";
 
 declare global {
   interface Window {
@@ -143,8 +197,13 @@ function App() {
   const [proxyEnabled, setProxyEnabled] = React.useState(false);
   const [startWithWindows, setStartWithWindows] = React.useState(false);
   const [startMinimizedToTray, setStartMinimizedToTray] = React.useState(false);
+  const [codexStyleEnhancementsEnabled, setCodexStyleEnhancementsEnabled] = React.useState(false);
+  const [codexMessageNotificationsEnabled, setCodexMessageNotificationsEnabled] = React.useState(false);
+  const [overviewDetailOpen, setOverviewDetailOpen] = React.useState(false);
   const [mountedMcps, setMountedMcps] = React.useState<MountedMcpServer[]>([]);
   const [mcpLoading, setMcpLoading] = React.useState(false);
+  const [sshState, setSshState] = React.useState<SshList | null>(null);
+  const [sshLoading, setSshLoading] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -157,6 +216,8 @@ function App() {
       setProxyEnabled(next.config.requestProxyEnabled);
       setStartWithWindows(next.config.startWithWindows);
       setStartMinimizedToTray(next.config.startMinimizedToTray);
+      setCodexStyleEnhancementsEnabled(next.config.codexStyleEnhancementsEnabled);
+      setCodexMessageNotificationsEnabled(next.config.codexMessageNotificationsEnabled);
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新失败");
     } finally {
@@ -185,6 +246,28 @@ function App() {
   React.useEffect(() => {
     if (active === "mcp") void loadMountedMcps();
   }, [active, loadMountedMcps]);
+
+  React.useEffect(() => {
+    if (active !== "overview") setOverviewDetailOpen(false);
+  }, [active]);
+
+  const loadSsh = React.useCallback(async (showToast = false) => {
+    setSshLoading(true);
+    setError("");
+    try {
+      const next = await bridge<SshList>("ssh.list");
+      setSshState(next);
+      if (showToast) setToast("SSH 列表已刷新。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取 SSH 失败");
+    } finally {
+      setSshLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (active === "ssh") void loadSsh();
+  }, [active, loadSsh]);
 
   React.useEffect(() => {
     if (!toast) return;
@@ -330,6 +413,35 @@ function App() {
     }
   }
 
+  async function saveCodexEnhancementSetting(
+    next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>,
+  ) {
+    const previousCodexStyleEnhancementsEnabled = codexStyleEnhancementsEnabled;
+    const previousCodexMessageNotificationsEnabled = codexMessageNotificationsEnabled;
+    const payload = {
+      codexStyleEnhancementsEnabled,
+      codexMessageNotificationsEnabled,
+      ...next,
+    };
+
+    setCodexStyleEnhancementsEnabled(payload.codexStyleEnhancementsEnabled);
+    setCodexMessageNotificationsEnabled(payload.codexMessageNotificationsEnabled);
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const config = await bridge<PublicConfig>("codex.save", payload);
+      setSnapshot((current) => (current ? { ...current, config } : current));
+      setToast("Codex 样式美化设置已保存。");
+    } catch (err) {
+      setCodexStyleEnhancementsEnabled(previousCodexStyleEnhancementsEnabled);
+      setCodexMessageNotificationsEnabled(previousCodexMessageNotificationsEnabled);
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function setMountedMcpEnabled(name: string, enabled: boolean) {
     setSaving(true);
     setError("");
@@ -360,11 +472,89 @@ function App() {
     }
   }
 
+  async function saveSshProfile(profile: SshDraft) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<SshList>("ssh.save", profile);
+      setSshState(next);
+      setToast(profile.id ? "SSH 配置已保存。" : "SSH 配置已新增。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存 SSH 失败");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteSshProfile(id: string) {
+    if (!window.confirm("删除这个 SSH 配置？")) return;
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<SshList>("ssh.delete", { id });
+      setSshState(next);
+      setToast("SSH 配置已删除。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除 SSH 失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setSshAiEnabled(id: string, enabled: boolean) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<SshList>("ssh.setAiEnabled", { id, enabled });
+      setSshState(next);
+      setToast(enabled ? "已允许 AI 访问。" : "已关闭 AI 访问。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "切换 SSH 访问失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testSshProfile(profile: SshDraft) {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const result = await bridge<{ ok: boolean; message: string; elapsedMs: number }>("ssh.test", profile);
+      setToast(`${result.message} ${result.elapsedMs}ms`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "测试 SSH 失败");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function installSshMcp() {
+    setSaving(true);
+    setError("");
+    setToast("");
+    try {
+      const next = await bridge<SshList>("ssh.installMcp");
+      setSshState(next);
+      setToast("SSH MCP 已安装到 Codex 配置。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "安装 SSH MCP 失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const config = snapshot?.config;
   const sections: Array<{ key: SectionKey; label: string; icon: React.ComponentType<{ size?: number; strokeWidth?: number }> }> = [
     { key: "overview", label: "总览", icon: Activity },
     { key: "browser", label: "浏览器", icon: Globe2 },
     { key: "mcp", label: "MCP", icon: Plug },
+    { key: "ssh", label: "SSH", icon: Server },
     { key: "proxy", label: "代理", icon: Network },
     { key: "debug", label: "本地调试", icon: Bug },
     { key: "logs", label: "日志", icon: TerminalSquare },
@@ -392,7 +582,7 @@ function App() {
       </aside>
 
       <section className="content">
-        {active !== "browser" && active !== "mcp" && (
+        {active !== "browser" && active !== "mcp" && active !== "ssh" && !(active === "overview" && overviewDetailOpen) && (
           <PageHeader
             title={sections.find((item) => item.key === active)?.label ?? ""}
             subtitle={subtitle(active)}
@@ -414,7 +604,11 @@ function App() {
                 saving={saving}
                 startWithWindows={startWithWindows}
                 startMinimizedToTray={startMinimizedToTray}
+                codexStyleEnhancementsEnabled={codexStyleEnhancementsEnabled}
+                codexMessageNotificationsEnabled={codexMessageNotificationsEnabled}
                 onStartupSettingChange={saveStartupSetting}
+                onCodexEnhancementSettingChange={saveCodexEnhancementSetting}
+                onDetailOpenChange={setOverviewDetailOpen}
               />
             )}
             {active === "browser" && (
@@ -437,6 +631,19 @@ function App() {
                 onRefresh={() => void loadMountedMcps(true)}
                 onSetEnabled={setMountedMcpEnabled}
                 onRefreshServer={refreshMountedMcp}
+              />
+            )}
+            {active === "ssh" && (
+              <SshSettings
+                state={sshState}
+                loading={sshLoading}
+                saving={saving}
+                onRefresh={() => void loadSsh(true)}
+                onSave={saveSshProfile}
+                onDelete={deleteSshProfile}
+                onSetAiEnabled={setSshAiEnabled}
+                onTest={testSshProfile}
+                onInstallMcp={installSshMcp}
               />
             )}
             {active === "proxy" && (
@@ -471,49 +678,135 @@ function Overview({
   saving,
   startWithWindows,
   startMinimizedToTray,
+  codexStyleEnhancementsEnabled,
+  codexMessageNotificationsEnabled,
   onStartupSettingChange,
+  onCodexEnhancementSettingChange,
+  onDetailOpenChange,
 }: {
   snapshot: Snapshot;
   saving: boolean;
   startWithWindows: boolean;
   startMinimizedToTray: boolean;
+  codexStyleEnhancementsEnabled: boolean;
+  codexMessageNotificationsEnabled: boolean;
   onStartupSettingChange: (next: Partial<Pick<PublicConfig, "startWithWindows" | "startMinimizedToTray">>) => Promise<void>;
+  onCodexEnhancementSettingChange: (
+    next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>,
+  ) => Promise<void>;
+  onDetailOpenChange: (open: boolean) => void;
 }) {
   const [secretVisible, setSecretVisible] = React.useState(false);
+  const [view, setView] = React.useState<"list" | "codex">("list");
+  const [returning, setReturning] = React.useState(false);
   const ownerPassword = snapshot.ownerPassword || "";
+
+  function openCodexDetails() {
+    setReturning(false);
+    setView("codex");
+    onDetailOpenChange(true);
+  }
+
+  function closeCodexDetails() {
+    setReturning(true);
+    setView("list");
+    onDetailOpenChange(false);
+  }
+
   return (
-    <div className="settings-panel">
-      <SettingRow title="DevSpace" description={snapshot.services.devspace.message}>
-        <StatusPill ok={snapshot.services.devspace.running && snapshot.services.devspace.healthOk} />
-      </SettingRow>
-      <SettingRow title="Cloudflare Tunnel" description={snapshot.services.tunnel.message}>
-        <StatusPill ok={snapshot.services.tunnel.running && snapshot.services.tunnel.healthOk} />
-      </SettingRow>
-      <SettingRow title="MCP 地址" description={snapshot.config.mcpUrl}>
-        <CopyText text={snapshot.config.mcpUrl} />
-      </SettingRow>
-      <SettingRow title="OAuth 密钥" description={ownerPassword ? (secretVisible ? ownerPassword : maskSecret(ownerPassword)) : "未生成"}>
-        <IconButton
-          label={secretVisible ? "隐藏 OAuth 密钥" : "显示 OAuth 密钥"}
-          disabled={!ownerPassword}
-          onClick={() => setSecretVisible((value) => !value)}
-        >
-          {secretVisible ? <EyeOff size={14} strokeWidth={1.4} aria-hidden="true" /> : <Eye size={14} strokeWidth={1.4} aria-hidden="true" />}
-        </IconButton>
-      </SettingRow>
-      <SettingRow title="开机启动" description="登录 Windows 后自动启动当前版本，保存时会清理旧版本启动项。">
-        <Switch checked={startWithWindows} onChange={(value) => void onStartupSettingChange({ startWithWindows: value })} label="开机启动" disabled={saving} />
-      </SettingRow>
-      <SettingRow title="启动时最小化到托盘" description="启动后只保留托盘图标，不自动打开 ChatGPT 主窗口。">
+    <div className="settings-panel browser-panel">
+      <div className={view === "list" ? `browser-view ${returning ? "slide-in-left" : ""}` : "browser-view slide-out-left"}>
+        {view === "list" && (
+          <>
+            <SettingRow title="DevSpace" description={snapshot.services.devspace.message}>
+              <StatusPill ok={snapshot.services.devspace.running && snapshot.services.devspace.healthOk} />
+            </SettingRow>
+            <SettingRow title="Cloudflare Tunnel" description={snapshot.services.tunnel.message}>
+              <StatusPill ok={snapshot.services.tunnel.running && snapshot.services.tunnel.healthOk} />
+            </SettingRow>
+            <SettingRow title="MCP 地址" description={snapshot.config.mcpUrl}>
+              <CopyText text={snapshot.config.mcpUrl} />
+            </SettingRow>
+            <SettingRow title="OAuth 密钥" description={ownerPassword ? (secretVisible ? ownerPassword : maskSecret(ownerPassword)) : "未生成"}>
+              <IconButton
+                label={secretVisible ? "隐藏 OAuth 密钥" : "显示 OAuth 密钥"}
+                disabled={!ownerPassword}
+                onClick={() => setSecretVisible((value) => !value)}
+              >
+                {secretVisible ? <EyeOff size={14} strokeWidth={1.4} aria-hidden="true" /> : <Eye size={14} strokeWidth={1.4} aria-hidden="true" />}
+              </IconButton>
+            </SettingRow>
+            <SettingRow
+              title="Codex 样式美化"
+              description={codexStyleEnhancementsEnabled ? "页面增强已启用，可进入明细管理各项能力。" : "关闭后所有 Codex 页面增强都会停用。"}
+            >
+              <div className="codex-setting-actions">
+                <IconButton label="Codex 样式美化设置" onClick={openCodexDetails}>
+                  <Settings size={14} strokeWidth={1.4} aria-hidden="true" />
+                </IconButton>
+                <Switch
+                  checked={codexStyleEnhancementsEnabled}
+                  onChange={(value) => void onCodexEnhancementSettingChange({ codexStyleEnhancementsEnabled: value })}
+                  label="Codex 样式美化"
+                  disabled={saving}
+                />
+              </div>
+            </SettingRow>
+            <SettingRow title="开机启动" description="登录 Windows 后自动启动当前版本，保存时会清理旧版本启动项。">
+              <Switch checked={startWithWindows} onChange={(value) => void onStartupSettingChange({ startWithWindows: value })} label="开机启动" disabled={saving} />
+            </SettingRow>
+            <SettingRow title="启动时最小化到托盘" description="启动后只保留托盘图标，不自动打开 ChatGPT 主窗口。">
+              <Switch
+                checked={startMinimizedToTray}
+                onChange={(value) => void onStartupSettingChange({ startMinimizedToTray: value })}
+                label="启动时最小化到托盘"
+                disabled={saving}
+              />
+            </SettingRow>
+            <SettingRow title="上次检查" description={new Date(snapshot.checkedAt).toLocaleString()} />
+          </>
+        )}
+      </div>
+      {view === "codex" && (
+        <div className="browser-view slide-in-right">
+          <CodexEnhancementDetails
+            messageNotificationsEnabled={codexMessageNotificationsEnabled}
+            saving={saving}
+            onBack={closeCodexDetails}
+            onChange={onCodexEnhancementSettingChange}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CodexEnhancementDetails({
+  messageNotificationsEnabled,
+  saving,
+  onBack,
+  onChange,
+}: {
+  messageNotificationsEnabled: boolean;
+  saving: boolean;
+  onBack: () => void;
+  onChange: (next: Partial<Pick<PublicConfig, "codexStyleEnhancementsEnabled" | "codexMessageNotificationsEnabled">>) => Promise<void>;
+}) {
+  return (
+    <>
+      <SubpageHeader title="Codex 样式美化" onBack={onBack} />
+      <SettingRow
+        title="消息通知"
+        description="ChatGPT 回复完成后发送 Windows 原生通知，尽量包含会话标题和截断后的最终回复。"
+      >
         <Switch
-          checked={startMinimizedToTray}
-          onChange={(value) => void onStartupSettingChange({ startMinimizedToTray: value })}
-          label="启动时最小化到托盘"
+          checked={messageNotificationsEnabled}
+          onChange={(value) => void onChange({ codexMessageNotificationsEnabled: value })}
+          label="消息通知"
           disabled={saving}
         />
       </SettingRow>
-      <SettingRow title="上次检查" description={new Date(snapshot.checkedAt).toLocaleString()} />
-    </div>
+    </>
   );
 }
 
@@ -974,6 +1267,7 @@ function McpToolsView({
         </button>
       </SubpageHeader>
       <SettingRow title="说明" description={server.description || "暂无说明"} />
+      <McpInstructionsSection instructions={server.instructions} />
       <SettingRow title="工具" description={server.refreshedAt ? `${server.toolCount} 个，上次刷新：${new Date(server.refreshedAt).toLocaleString()}` : "尚未刷新工具列表"} />
       <div className="tool-list" aria-label={`${server.name} 工具列表`}>
         {server.tools.length === 0 && <div className="empty-state">暂无工具缓存，点击刷新工具读取该 MCP 的 tools/list。</div>}
@@ -986,6 +1280,361 @@ function McpToolsView({
       </div>
     </>
   );
+}
+
+function McpInstructionsSection({ instructions }: { instructions: string }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const content = instructions.trim();
+
+  if (!content) {
+    return <SettingRow title="使用说明" description="暂无使用说明" />;
+  }
+
+  return (
+    <div className="mcp-instructions">
+      <button className="mcp-instructions-toggle" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span>
+          <span className="setting-title">使用说明</span>
+        </span>
+        <ChevronDown className={expanded ? "mcp-instructions-icon expanded" : "mcp-instructions-icon"} size={14} strokeWidth={1.4} aria-hidden="true" />
+      </button>
+      {expanded && <pre className="mcp-instructions-body">{content}</pre>}
+    </div>
+  );
+}
+
+type SshView = "list" | "create" | "edit";
+
+function SshSettings({
+  state,
+  loading,
+  saving,
+  onRefresh,
+  onSave,
+  onDelete,
+  onSetAiEnabled,
+  onTest,
+  onInstallMcp,
+}: {
+  state: SshList | null;
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onSave: (profile: SshDraft) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onSetAiEnabled: (id: string, enabled: boolean) => Promise<void>;
+  onTest: (profile: SshDraft) => Promise<void>;
+  onInstallMcp: () => Promise<void>;
+}) {
+  const [view, setView] = React.useState<SshView>("list");
+  const [selected, setSelected] = React.useState<SshProfile | null>(null);
+  const [reverse, setReverse] = React.useState(false);
+
+  function openEditor(nextView: Exclude<SshView, "list">, profile: SshProfile | null = null) {
+    setSelected(profile);
+    setReverse(false);
+    setView(nextView);
+  }
+
+  function backToList() {
+    setReverse(true);
+    setView("list");
+  }
+
+  async function saveAndBack(draft: SshDraft) {
+    await onSave(draft);
+    backToList();
+  }
+
+  return (
+    <div className="settings-panel browser-panel">
+      <div className={view === "list" ? `browser-view ${reverse ? "slide-in-left" : ""}` : "browser-view slide-out-left"}>
+        {view === "list" && (
+          <SshListView
+            state={state}
+            loading={loading}
+            saving={saving}
+            onRefresh={onRefresh}
+            onCreate={() => openEditor("create")}
+            onEdit={(profile) => openEditor("edit", profile)}
+            onDelete={onDelete}
+            onSetAiEnabled={onSetAiEnabled}
+            onInstallMcp={onInstallMcp}
+          />
+        )}
+      </div>
+      {view !== "list" && (
+        <div className="browser-view slide-in-right">
+          <SshEditorView
+            profile={view === "edit" ? selected : null}
+            templates={state?.templates ?? []}
+            saving={saving}
+            onBack={backToList}
+            onSave={saveAndBack}
+            onTest={onTest}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SshListView({
+  state,
+  loading,
+  saving,
+  onRefresh,
+  onCreate,
+  onEdit,
+  onDelete,
+  onSetAiEnabled,
+  onInstallMcp,
+}: {
+  state: SshList | null;
+  loading: boolean;
+  saving: boolean;
+  onRefresh: () => void;
+  onCreate: () => void;
+  onEdit: (profile: SshProfile) => void;
+  onDelete: (id: string) => Promise<void>;
+  onSetAiEnabled: (id: string, enabled: boolean) => Promise<void>;
+  onInstallMcp: () => Promise<void>;
+}) {
+  const profiles = state?.profiles ?? [];
+  return (
+    <>
+      <div className="browser-toolbar ssh-toolbar">
+        <div>
+          <div className="toolbar-title ssh-toolbar-title">SSH</div>
+          <div className="toolbar-subtitle">维护本机保存的 SSH 连接，AI 只能访问已开启的配置。</div>
+        </div>
+        <div className="toolbar-actions">
+          <button className="secondary-button" type="button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw className={loading ? "spin" : ""} size={14} strokeWidth={1.4} aria-hidden="true" />
+            刷新
+          </button>
+          {state && !state.installed && (
+            <button className="secondary-button" type="button" onClick={() => void onInstallMcp()} disabled={saving}>
+              <Plug size={14} strokeWidth={1.4} aria-hidden="true" />
+              安装 MCP
+            </button>
+          )}
+          <button className="primary-button" type="button" onClick={onCreate}>
+            <Plus size={14} strokeWidth={1.4} aria-hidden="true" />
+            新增
+          </button>
+        </div>
+      </div>
+      {state?.installed && <div className="soft-note">SSH MCP 已安装。</div>}
+      <div className="profile-list" aria-label="SSH 服务器列表">
+        {profiles.length === 0 && <div className="empty-state">还没有 SSH 配置。</div>}
+        {profiles.map((profile) => (
+          <div className="profile-row ssh-row" key={profile.id}>
+            <div className="profile-main">
+              <div className="profile-name-line">
+                <span className="profile-name">{profile.name}</span>
+                <StatusPill ok={profile.aiEnabled} okText="AI" failText="关闭" />
+                <StatusPill ok={profile.securityMode !== "unrestricted"} okText={securityModeLabel(profile.securityMode)} failText="完全允许" />
+              </div>
+              <div className="profile-meta">{profile.host}:{profile.port} · {profile.username}</div>
+              <div className="profile-meta">{profile.description || templateLabel(profile.policyTemplate)}</div>
+            </div>
+            <div className="ssh-actions">
+              <Switch checked={profile.aiEnabled} onChange={(value) => void onSetAiEnabled(profile.id, value)} label={`切换 ${profile.name} AI 访问`} disabled={saving} />
+              <IconButton label="修改" onClick={() => onEdit(profile)}>
+                <Pencil size={14} strokeWidth={1.4} aria-hidden="true" />
+              </IconButton>
+              <IconButton label="删除" danger disabled={saving} onClick={() => void onDelete(profile.id)}>
+                <Trash2 size={14} strokeWidth={1.4} aria-hidden="true" />
+              </IconButton>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function SshEditorView({
+  profile,
+  templates,
+  saving,
+  onBack,
+  onSave,
+  onTest,
+}: {
+  profile: SshProfile | null;
+  templates: SshPolicyTemplate[];
+  saving: boolean;
+  onBack: () => void;
+  onSave: (profile: SshDraft) => Promise<void>;
+  onTest: (profile: SshDraft) => Promise<void>;
+}) {
+  const [name, setName] = React.useState(profile?.name ?? "新服务器");
+  const [host, setHost] = React.useState(profile?.host ?? "");
+  const [port, setPort] = React.useState(String(profile?.port ?? 22));
+  const [username, setUsername] = React.useState(profile?.username ?? "root");
+  const [password, setPassword] = React.useState("");
+  const [aiEnabled, setAiEnabled] = React.useState(profile?.aiEnabled ?? true);
+  const [securityMode, setSecurityMode] = React.useState<SshDraft["securityMode"]>(profile?.securityMode ?? "restricted");
+  const [policyTemplate, setPolicyTemplate] = React.useState(profile?.policyTemplate ?? "inspection");
+  const [description, setDescription] = React.useState(profile?.description ?? "");
+  const [allowPatterns, setAllowPatterns] = React.useState((profile?.allowPatterns ?? []).join("\n"));
+  const [denyPatterns, setDenyPatterns] = React.useState((profile?.denyPatterns ?? []).join("\n"));
+  const [localError, setLocalError] = React.useState("");
+
+  function draft(includePassword: boolean): SshDraft | null {
+    setLocalError("");
+    const parsedPort = Number(port);
+    if (!name.trim()) return failDraft("名称不能为空。");
+    if (!host.trim()) return failDraft("主机不能为空。");
+    if (!username.trim()) return failDraft("用户名不能为空。");
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) return failDraft("端口必须在 1-65535 之间。");
+    if (!profile && !password.trim()) return failDraft("密码不能为空。");
+    const next: SshDraft = {
+      id: profile?.id,
+      name: name.trim(),
+      host: host.trim(),
+      port: parsedPort,
+      username: username.trim(),
+      aiEnabled,
+      securityMode,
+      policyTemplate,
+      allowPatterns: splitPatterns(allowPatterns),
+      denyPatterns: splitPatterns(denyPatterns),
+      description: description.trim(),
+      idleTimeoutMinutes: profile?.idleTimeoutMinutes ?? 30,
+      commandTimeoutSeconds: profile?.commandTimeoutSeconds ?? 60,
+      maxOutputBytes: profile?.maxOutputBytes ?? 128 * 1024,
+    };
+    if (includePassword || password) {
+      next.password = password;
+    }
+    return next;
+  }
+
+  function failDraft(message: string) {
+    setLocalError(message);
+    return null;
+  }
+
+  async function submit() {
+    const next = draft(false);
+    if (!next) return;
+    try {
+      await onSave(next);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  async function test() {
+    const next = draft(false);
+    if (!next) return;
+    try {
+      await onTest(next);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "测试失败");
+    }
+  }
+
+  return (
+    <>
+      <SubpageHeader title={profile ? "修改 SSH" : "新增 SSH"} onBack={onBack}>
+        <button className="secondary-button" type="button" disabled={saving} onClick={() => void test()}>
+          {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <ShieldCheck size={14} strokeWidth={1.4} />}
+          测试
+        </button>
+      </SubpageHeader>
+      {localError && <div className="inline-error">{localError}</div>}
+      <EditRow label="名称">
+        <input className="text-input" value={name} onChange={(event) => setName(event.target.value)} aria-label="SSH 名称" />
+      </EditRow>
+      <EditRow label="主机">
+        <input className="text-input wide" value={host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.10" aria-label="SSH 主机" />
+      </EditRow>
+      <EditRow label="端口">
+        <input className="number-input" value={port} onChange={(event) => setPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} aria-label="SSH 端口" />
+      </EditRow>
+      <EditRow label="用户名">
+        <input className="text-input compact" value={username} onChange={(event) => setUsername(event.target.value)} aria-label="SSH 用户名" />
+      </EditRow>
+      <EditRow label="密码">
+        <input
+          className="text-input wide"
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder={profile?.passwordConfigured ? "留空则不修改" : "服务器密码"}
+          aria-label="SSH 密码"
+        />
+      </EditRow>
+      <EditRow label="AI 访问">
+        <Switch checked={aiEnabled} onChange={setAiEnabled} label="AI 访问" />
+      </EditRow>
+      <EditRow label="安全模式">
+        <select className="select-input" value={securityMode} onChange={(event) => setSecurityMode(event.target.value as SshDraft["securityMode"])} aria-label="安全模式">
+          <option value="restricted">受限</option>
+          <option value="readonly">只读</option>
+          <option value="unrestricted">完全允许</option>
+        </select>
+      </EditRow>
+      <EditRow label="策略模板">
+        <select className="select-input wide" value={policyTemplate} onChange={(event) => setPolicyTemplate(event.target.value)} aria-label="策略模板">
+          {templates.map((template) => (
+            <option key={template.id} value={template.id}>{template.name}</option>
+          ))}
+        </select>
+      </EditRow>
+      <EditRow label="说明">
+        <input className="text-input wide" value={description} onChange={(event) => setDescription(event.target.value)} aria-label="说明" />
+      </EditRow>
+      <EditRow label="允许规则">
+        <textarea className="textarea-input" value={allowPatterns} onChange={(event) => setAllowPatterns(event.target.value)} aria-label="允许规则" />
+      </EditRow>
+      <EditRow label="拒绝规则">
+        <textarea className="textarea-input" value={denyPatterns} onChange={(event) => setDenyPatterns(event.target.value)} aria-label="拒绝规则" />
+      </EditRow>
+      <div className="panel-footer">
+        <p>新增默认允许 AI 访问，并使用受限模式。服务器信息会使用当前 Windows 用户加密保存。</p>
+        <button className="primary-button" type="button" onClick={() => void submit()} disabled={saving}>
+          {saving ? <Loader2 className="spin" size={14} strokeWidth={1.4} /> : <CheckCircle2 size={14} strokeWidth={1.4} />}
+          {saving ? "保存中" : "保存"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function splitPatterns(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function securityModeLabel(mode: SshProfile["securityMode"]) {
+  switch (mode) {
+    case "readonly":
+      return "只读";
+    case "restricted":
+      return "受限";
+    case "unrestricted":
+      return "完全允许";
+  }
+}
+
+function templateLabel(template: string) {
+  switch (template) {
+    case "inspection":
+      return "巡检模板";
+    case "logs":
+      return "日志模板";
+    case "custom":
+      return "自定义模板";
+    default:
+      return template;
+  }
 }
 
 function SubpageHeader({ title, onBack, children }: { title: string; onBack: () => void; children?: React.ReactNode }) {

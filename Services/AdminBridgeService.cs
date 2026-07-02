@@ -73,9 +73,16 @@ internal sealed class AdminBridgeService
             "config.saveBasics" => await SaveBasicsAsync(payload),
             "startup.save" => await SaveStartupAsync(payload),
             "debug.save" => await SaveDebugAsync(payload),
+            "codex.save" => await SaveCodexEnhancementsAsync(payload),
             "mcp.list" => await _app.MountedMcps.ListAsync(cancellationToken),
             "mcp.setEnabled" => await SetMountedMcpEnabledAsync(payload, cancellationToken),
             "mcp.refresh" => await RefreshMountedMcpAsync(payload, cancellationToken),
+            "ssh.list" => _app.SshProfiles.ListPublic(),
+            "ssh.save" => _app.SshProfiles.Save(ReadSshDraft(payload)),
+            "ssh.delete" => _app.SshProfiles.Delete(RequiredString(payload, "id")),
+            "ssh.setAiEnabled" => _app.SshProfiles.SetAiEnabled(RequiredString(payload, "id"), RequiredBool(payload, "enabled")),
+            "ssh.test" => await _app.SshProfiles.TestAsync(ReadSshDraft(payload), cancellationToken),
+            "ssh.installMcp" => _app.SshProfiles.InstallMcp(),
             "log.tail" => TailLog(payload),
             "environment.check" => await _app.Environment.CheckAsync(),
             "environment.openInstaller" => OpenInstaller(),
@@ -334,6 +341,24 @@ internal sealed class AdminBridgeService
         return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
     }
 
+    private async Task<object> SaveCodexEnhancementsAsync(JsonElement payload)
+    {
+        var config = _app.ConfigStore.Reload();
+        if (payload.TryGetProperty("codexStyleEnhancementsEnabled", out var enabled))
+        {
+            config.CodexStyleEnhancementsEnabled = enabled.GetBoolean();
+        }
+
+        if (payload.TryGetProperty("codexMessageNotificationsEnabled", out var notificationsEnabled))
+        {
+            config.CodexMessageNotificationsEnabled = notificationsEnabled.GetBoolean();
+        }
+
+        _app.ConfigStore.Save(config);
+        await Task.CompletedTask;
+        return PublicConfig(config, _app.Scheduler.IsTrayRegistered());
+    }
+
     private async Task<object> SetMountedMcpEnabledAsync(JsonElement payload, CancellationToken cancellationToken)
     {
         var name = RequiredString(payload, "name");
@@ -420,6 +445,8 @@ internal sealed class AdminBridgeService
         config.AutoRestart,
         config.LocalDebugEnabled,
         config.LocalDebugPort,
+        config.CodexStyleEnhancementsEnabled,
+        config.CodexMessageNotificationsEnabled,
         activeProfileId = config.ActiveBrowserProfileId,
         profiles = config.BrowserProfiles.Select(PublicProfile).ToArray()
     };
@@ -449,6 +476,59 @@ internal sealed class AdminBridgeService
         }
 
         return text;
+    }
+
+    private static bool RequiredBool(JsonElement payload, string propertyName)
+    {
+        if (!payload.TryGetProperty(propertyName, out var value))
+        {
+            throw new InvalidOperationException($"缺少字段：{propertyName}");
+        }
+
+        if (value.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+        {
+            throw new InvalidOperationException($"字段必须是布尔值：{propertyName}");
+        }
+
+        return value.GetBoolean();
+    }
+
+    private static SshProfileDraft ReadSshDraft(JsonElement payload)
+    {
+        string? id = payload.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+        var passwordProvided = payload.TryGetProperty("password", out var passwordElement);
+        return new SshProfileDraft(
+            id,
+            RequiredString(payload, "name"),
+            RequiredString(payload, "host"),
+            ReadInt(payload, "port", 22),
+            RequiredString(payload, "username"),
+            passwordProvided ? passwordElement.GetString() ?? "" : null,
+            payload.TryGetProperty("aiEnabled", out var aiEnabled) ? aiEnabled.GetBoolean() : true,
+            payload.TryGetProperty("securityMode", out var securityMode) ? securityMode.GetString() ?? "restricted" : "restricted",
+            payload.TryGetProperty("policyTemplate", out var policyTemplate) ? policyTemplate.GetString() ?? "inspection" : "inspection",
+            ReadStringArray(payload, "allowPatterns"),
+            ReadStringArray(payload, "denyPatterns"),
+            ReadInt(payload, "idleTimeoutMinutes", 30),
+            ReadInt(payload, "commandTimeoutSeconds", 60),
+            ReadInt(payload, "maxOutputBytes", 128 * 1024),
+            payload.TryGetProperty("description", out var description) ? description.GetString() ?? "" : "");
+    }
+
+    private static int ReadInt(JsonElement payload, string propertyName, int fallback)
+    {
+        return payload.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var number)
+            ? number
+            : fallback;
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement payload, string propertyName)
+    {
+        if (!payload.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array) return [];
+        return value.EnumerateArray()
+            .Select(item => item.GetString()?.Trim() ?? "")
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
     }
 
     private static string NormalizeLanguage(string value)
